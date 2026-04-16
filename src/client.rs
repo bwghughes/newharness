@@ -278,13 +278,11 @@ impl LlmClient {
                         let _ = write!(stdout, "{token}");
                         let _ = stdout.flush();
                     }
-                    SseEvent::ToolCallDelta => {
-                        if first_output {
-                            if let Some(s) = thinking_spinner.take() {
-                                s.stop().await;
-                            }
-                            first_output = false;
+                    SseEvent::ToolCallDelta if first_output => {
+                        if let Some(s) = thinking_spinner.take() {
+                            s.stop().await;
                         }
+                        first_output = false;
                     }
                     SseEvent::Done => break,
                     _ => {}
