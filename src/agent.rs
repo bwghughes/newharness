@@ -47,10 +47,7 @@ impl Agent {
         self.messages.push(Message::user(user_input));
 
         for _ in 0..self.max_turns {
-            let assistant_msg = self
-                .client
-                .chat_stream(&self.messages, &self.tools)
-                .await?;
+            let assistant_msg = self.client.chat_stream(&self.messages, &self.tools).await?;
 
             let has_tool_calls = assistant_msg.tool_calls.is_some();
             self.messages.push(assistant_msg.clone());
@@ -98,5 +95,184 @@ impl Agent {
             "[Earlier conversation was compacted to save context. Continue from the most recent messages.]",
         ));
         self.messages.extend(tail);
+    }
+
+    /// Get a reference to the message history (for testing).
+    #[cfg(test)]
+    pub fn messages(&self) -> &[Message] {
+        &self.messages
+    }
+
+    /// Get the number of messages (for testing).
+    #[cfg(test)]
+    pub fn message_count(&self) -> usize {
+        self.messages.len()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_agent() -> Agent {
+        let client = LlmClient::new("http://localhost:0/v1", "test-key", "test-model");
+        Agent::new(client, PathBuf::from("/tmp"))
+    }
+
+    // ── Constructor tests ──
+
+    #[test]
+    fn agent_new_starts_with_system_prompt() {
+        let agent = make_agent();
+        assert_eq!(agent.messages().len(), 1);
+        assert_eq!(agent.messages()[0].role, "system");
+        assert!(agent.messages()[0]
+            .content
+            .as_ref()
+            .unwrap()
+            .contains("software engineer"));
+    }
+
+    #[test]
+    fn agent_new_has_five_tools() {
+        let agent = make_agent();
+        assert_eq!(agent.tools.len(), 5);
+    }
+
+    #[test]
+    fn agent_new_has_max_turns_50() {
+        let agent = make_agent();
+        assert_eq!(agent.max_turns, 50);
+    }
+
+    // ── Compact tests ──
+
+    #[test]
+    fn compact_noop_when_few_messages() {
+        let mut agent = make_agent();
+        // Only system prompt — nothing to compact
+        agent.compact(10);
+        assert_eq!(agent.message_count(), 1);
+        assert_eq!(agent.messages()[0].role, "system");
+    }
+
+    #[test]
+    fn compact_noop_at_boundary() {
+        let mut agent = make_agent();
+        // Add exactly keep_last messages on top of system
+        for i in 0..5 {
+            agent.messages.push(Message::user(&format!("msg {i}")));
+        }
+        // Total: 6 messages (1 system + 5 user), keep_last = 5
+        // 6 <= 5 + 1, so no compaction
+        agent.compact(5);
+        assert_eq!(agent.message_count(), 6);
+    }
+
+    #[test]
+    fn compact_keeps_system_and_last_n() {
+        let mut agent = make_agent();
+        for i in 0..20 {
+            agent.messages.push(Message::user(&format!("msg {i}")));
+        }
+        // Total: 21 messages
+        agent.compact(5);
+        // Should be: system + compaction notice + last 5 = 7
+        assert_eq!(agent.message_count(), 7);
+        assert_eq!(agent.messages()[0].role, "system");
+        assert_eq!(agent.messages()[1].role, "user");
+        assert!(agent.messages()[1]
+            .content
+            .as_ref()
+            .unwrap()
+            .contains("compacted"));
+    }
+
+    #[test]
+    fn compact_preserves_system_prompt_content() {
+        let mut agent = make_agent();
+        let original_system = agent.messages()[0].content.clone();
+        for i in 0..20 {
+            agent.messages.push(Message::user(&format!("msg {i}")));
+        }
+        agent.compact(3);
+        assert_eq!(agent.messages()[0].content, original_system);
+    }
+
+    #[test]
+    fn compact_preserves_most_recent_messages() {
+        let mut agent = make_agent();
+        for i in 0..10 {
+            agent.messages.push(Message::user(&format!("msg {i}")));
+        }
+        agent.compact(3);
+        // Last 3 messages should be msg 7, 8, 9
+        let msgs = agent.messages();
+        let last3: Vec<&str> = msgs[msgs.len() - 3..]
+            .iter()
+            .map(|m| m.content.as_ref().unwrap().as_str())
+            .collect();
+        assert_eq!(last3, vec!["msg 7", "msg 8", "msg 9"]);
+    }
+
+    #[test]
+    fn compact_with_keep_last_zero() {
+        let mut agent = make_agent();
+        for i in 0..5 {
+            agent.messages.push(Message::user(&format!("msg {i}")));
+        }
+        // keep_last = 0, should keep just system + compaction notice
+        agent.compact(0);
+        assert_eq!(agent.message_count(), 2);
+        assert_eq!(agent.messages()[0].role, "system");
+        assert!(agent.messages()[1]
+            .content
+            .as_ref()
+            .unwrap()
+            .contains("compacted"));
+    }
+
+    #[test]
+    fn compact_with_mixed_message_types() {
+        let mut agent = make_agent();
+        agent.messages.push(Message::user("question"));
+        agent
+            .messages
+            .push(Message::assistant(Some("answer".into()), None));
+        agent.messages.push(Message::user("follow up"));
+        agent.messages.push(Message::assistant(
+            None,
+            Some(vec![ToolCall {
+                id: "tc_1".into(),
+                kind: "function".into(),
+                function: FunctionCall {
+                    name: "bash".into(),
+                    arguments: "{}".into(),
+                },
+            }]),
+        ));
+        agent.messages.push(Message::tool_result("tc_1", "output"));
+        agent
+            .messages
+            .push(Message::assistant(Some("done".into()), None));
+
+        // Total: 7 messages, compact keeping last 2
+        agent.compact(2);
+        assert_eq!(agent.message_count(), 4); // system + notice + last 2
+        let msgs = agent.messages();
+        // Last message should be the "done" assistant message
+        assert_eq!(msgs[3].content.as_ref().unwrap(), "done");
+    }
+
+    #[test]
+    fn compact_twice_is_idempotent_when_small() {
+        let mut agent = make_agent();
+        for i in 0..3 {
+            agent.messages.push(Message::user(&format!("msg {i}")));
+        }
+        agent.compact(5);
+        let count_after_first = agent.message_count();
+        agent.compact(5);
+        assert_eq!(agent.message_count(), count_after_first);
     }
 }

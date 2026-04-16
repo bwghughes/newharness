@@ -36,8 +36,7 @@ fn read_config() -> (String, String, String) {
             String::new()
         });
 
-    let model = std::env::var("HARNESS_MODEL")
-        .unwrap_or_else(|_| "gpt-4o".into());
+    let model = std::env::var("HARNESS_MODEL").unwrap_or_else(|_| "gpt-4o".into());
 
     (base_url, api_key, model)
 }
