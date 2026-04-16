@@ -61,7 +61,12 @@ impl StreamAssembler {
 
         let chunk: StreamChunk = match serde_json::from_str(data) {
             Ok(c) => c,
-            Err(_) => return SseEvent::Ignored,
+            Err(e) => {
+                if std::env::var("STRAPIN_VERBOSE").is_ok() {
+                    eprintln!("\x1b[90m[debug] SSE parse error: {e} | data: {data}\x1b[0m");
+                }
+                return SseEvent::Ignored;
+            }
         };
 
         let mut got_content = false;
@@ -75,6 +80,15 @@ impl StreamAssembler {
 
             if let Some(ref tcs) = choice.delta.tool_calls {
                 for tc in tcs {
+                    if std::env::var("STRAPIN_VERBOSE").is_ok() {
+                        eprintln!(
+                            "\x1b[90m[debug] tool_call delta: idx={} id={:?} name={:?} args={:?}\x1b[0m",
+                            tc.index,
+                            tc.id,
+                            tc.function.as_ref().and_then(|f| f.name.as_ref()),
+                            tc.function.as_ref().and_then(|f| f.arguments.as_ref()).map(|a| &a[..a.len().min(60)]),
+                        );
+                    }
                     self.apply_tool_call_delta(tc);
                 }
                 got_tool = true;
@@ -119,7 +133,9 @@ impl StreamAssembler {
         }
         if let Some(ref f) = delta.function {
             if let Some(ref name) = f.name {
-                self.tool_calls[idx].function.name = name.clone();
+                if !name.is_empty() {
+                    self.tool_calls[idx].function.name = name.clone();
+                }
             }
             if let Some(ref args) = f.arguments {
                 self.tool_calls[idx].function.arguments.push_str(args);
@@ -141,7 +157,10 @@ impl StreamAssembler {
             .tool_calls
             .into_iter()
             .enumerate()
-            .filter(|(_, tc)| !tc.function.name.is_empty())
+            .filter(|(_, tc)| {
+                // Keep entries that have a name OR have arguments (not just filler padding)
+                !tc.function.name.is_empty() || !tc.function.arguments.is_empty()
+            })
             .map(|(i, mut tc)| {
                 if tc.id.is_empty() {
                     tc.id = format!("call_{i}");
@@ -262,11 +281,14 @@ impl LlmClient {
         let verbose = std::env::var("STRAPIN_VERBOSE").is_ok();
 
         if verbose {
-            eprintln!(
-                "\x1b[90m[debug] content={} chars, raw_tool_calls={}, valid after filter\x1b[0m",
-                assembler.content.len(),
-                assembler.tool_calls.len(),
-            );
+            for (i, tc) in assembler.tool_calls.iter().enumerate() {
+                eprintln!(
+                    "\x1b[90m[debug] raw_tool_call[{i}]: id=\"{}\" name=\"{}\" args_len={}\x1b[0m",
+                    tc.id,
+                    tc.function.name,
+                    tc.function.arguments.len(),
+                );
+            }
         }
 
         let msg = assembler.finish();
