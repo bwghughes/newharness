@@ -4,6 +4,26 @@ use std::sync::Arc;
 use tokio::task::JoinHandle;
 use tokio::time::{self, Duration};
 
+// ANSI color codes
+const RESET: &str = "\x1b[0m";
+const DIM: &str = "\x1b[2m";
+const BOLD: &str = "\x1b[1m";
+const CYAN: &str = "\x1b[36m";
+const MAGENTA: &str = "\x1b[35m";
+const YELLOW: &str = "\x1b[33m";
+const GREEN: &str = "\x1b[32m";
+const BLUE: &str = "\x1b[34m";
+
+const GRADIENT: &[&str] = &[
+    "\x1b[36m", // cyan
+    "\x1b[96m", // bright cyan
+    "\x1b[34m", // blue
+    "\x1b[94m", // bright blue
+    "\x1b[35m", // magenta
+    "\x1b[95m", // bright magenta
+    "\x1b[36m", // cyan
+];
+
 const BRAILLE: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 const DOTS: &[&str] = &["   ", ".  ", ".. ", "...", " ..", "  .", "   "];
 const BOUNCE: &[&str] = &[
@@ -61,7 +81,11 @@ impl Spinner {
             let mut i = 0;
             while running_clone.load(Ordering::Relaxed) {
                 let frame = frames[i % frames.len()];
-                let _ = write!(stderr, "\r\x1b[90m  {frame} {msg}\x1b[0m\x1b[K");
+                let color = GRADIENT[i % GRADIENT.len()];
+                let _ = write!(
+                    stderr,
+                    "\r  {color}{BOLD}{frame}{RESET} {DIM}{msg}{RESET}\x1b[K"
+                );
                 let _ = stderr.flush();
                 i += 1;
                 time::sleep(Duration::from_millis(interval)).await;
@@ -113,8 +137,21 @@ impl ToolProgress {
         self.completed += 1;
         let pct = (self.completed as f64 / self.total as f64 * 100.0) as u8;
         let filled = (self.completed * 20) / self.total;
-        let bar: String = "█".repeat(filled) + &"░".repeat(20 - filled);
-        eprint!("\r\x1b[90m  [{bar}] {pct:>3}% \x1b[36m{tool_name}\x1b[0m\x1b[K");
+        let empty = 20 - filled;
+
+        let bar_color = if pct < 33 {
+            CYAN
+        } else if pct < 66 {
+            BLUE
+        } else {
+            GREEN
+        };
+
+        let filled_bar = "█".repeat(filled);
+        let empty_bar = "░".repeat(empty);
+        eprint!(
+            "\r  {bar_color}{filled_bar}{DIM}{empty_bar}{RESET} {YELLOW}{pct:>3}%{RESET} {MAGENTA}{tool_name}{RESET}\x1b[K"
+        );
         let _ = io::stderr().flush();
     }
 
@@ -122,6 +159,16 @@ impl ToolProgress {
         eprint!("\r\x1b[K");
         let _ = io::stderr().flush();
     }
+}
+
+/// Print a colored tool completion message.
+pub fn print_tool_done(name: &str, detail: &str) {
+    eprintln!("  {GREEN}{BOLD}✓{RESET} {CYAN}{name}{RESET} {DIM}({detail}){RESET}");
+}
+
+/// Print a colored multi-tool completion message.
+pub fn print_tools_done(count: usize) {
+    eprintln!("  {GREEN}{BOLD}✓{RESET} {CYAN}{count} tools{RESET} {DIM}completed{RESET}");
 }
 
 #[cfg(test)]
@@ -150,6 +197,14 @@ mod tests {
         assert!(Style::Bounce.interval_ms() > 0 && Style::Bounce.interval_ms() < 200);
     }
 
+    #[test]
+    fn gradient_has_entries() {
+        assert!(!GRADIENT.is_empty());
+        for g in GRADIENT {
+            assert!(g.starts_with("\x1b["));
+        }
+    }
+
     #[tokio::test]
     async fn spinner_starts_and_stops() {
         let spinner = Spinner::start("testing", Style::Braille);
@@ -171,7 +226,6 @@ mod tests {
             let _spinner = Spinner::start("drop test", Style::Bounce);
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
-        // If we get here without hanging, drop worked
     }
 
     #[test]
@@ -191,5 +245,23 @@ mod tests {
         prog.tick("bash");
         assert_eq!(prog.completed, 1);
         prog.finish();
+    }
+
+    #[test]
+    fn progress_bar_color_changes_with_pct() {
+        let mut prog = ToolProgress::new(10);
+        prog.tick("t1");
+        // 10% — should be cyan range
+        assert_eq!(prog.completed, 1);
+        for i in 2..=6 {
+            prog.tick(&format!("t{i}"));
+        }
+        // 60% — should be blue range
+        assert_eq!(prog.completed, 6);
+        for i in 7..=10 {
+            prog.tick(&format!("t{i}"));
+        }
+        // 100% — should be green range
+        assert_eq!(prog.completed, 10);
     }
 }

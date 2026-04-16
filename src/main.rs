@@ -10,20 +10,18 @@ use std::io::{self, BufRead, Write};
 use std::path::PathBuf;
 
 fn print_banner() {
-    eprintln!(
-        r#"
-  _____ _______ _____            _____    _____ _   _
- / ____|__   __|  __ \     /\   |  __ \  |_   _| \ | |
-| (___    | |  | |__) |   /  \  | |__) |   | | |  \| |
- \___ \   | |  |  _  /   / /\ \ |  ___/    | | | . ` |
- ____) |  | |  | | \ \  / ____ \| |       _| |_| |\  |
-|_____/   |_|  |_|  \_\/_/    \_\_|      |_____|_| \_|
-
-  Fast coding agent harness — any OpenAI-compatible endpoint
-  Type your request, or 'quit' to exit.
-  Commands: /compact, /clear
-"#
-    );
+    eprintln!("\x1b[36m\x1b[1m");
+    eprintln!("  _____ _______ _____            _____    _____ _   _");
+    eprintln!(" / ____|__   __|  __ \\     /\\   |  __ \\  |_   _| \\ | |");
+    eprintln!("| (___    | |  | |__) |   /  \\  | |__) |   | | |  \\| |");
+    eprintln!(" \\___ \\   | |  |  _  /   / /\\ \\ |  ___/    | | | . ` |");
+    eprintln!(" ____) |  | |  | | \\ \\  / ____ \\| |       _| |_| |\\  |");
+    eprintln!("|_____/   |_|  |_|  \\_\\/_/    \\_\\_|      |_____|_| \\_|");
+    eprintln!("\x1b[0m");
+    eprintln!("  \x1b[2mFast coding agent harness \x1b[0m\x1b[33m\x1b[1m—\x1b[0m\x1b[2m any OpenAI-compatible endpoint\x1b[0m");
+    eprintln!("  \x1b[2mType your request, or \x1b[35m'quit'\x1b[0m\x1b[2m to exit.\x1b[0m");
+    eprintln!("  \x1b[2mCommands: \x1b[36m/compact\x1b[0m\x1b[2m, \x1b[36m/clear\x1b[0m");
+    eprintln!();
 }
 
 fn read_config() -> (String, String, String) {
@@ -49,8 +47,8 @@ async fn main() {
 
     let (base_url, api_key, model) = read_config();
 
-    eprintln!("  endpoint: {base_url}");
-    eprintln!("  model:    {model}");
+    eprintln!("  \x1b[2mendpoint:\x1b[0m \x1b[33m{base_url}\x1b[0m");
+    eprintln!("  \x1b[2mmodel:\x1b[0m    \x1b[33m{model}\x1b[0m");
     eprintln!();
 
     let workdir = std::env::var("STRAPIN_WORKDIR")
@@ -86,7 +84,7 @@ async fn main() {
             "quit" | "exit" | "/quit" | "/exit" => break,
             "/compact" => {
                 agent.compact(10);
-                eprintln!("\x1b[90m[compacted context]\x1b[0m");
+                eprintln!("  \x1b[33m↻\x1b[0m \x1b[2mcontext compacted\x1b[0m");
                 continue;
             }
             "/clear" => {
@@ -98,7 +96,7 @@ async fn main() {
                     });
                 let client = LlmClient::new(&base_url, &api_key, &model);
                 agent = Agent::new(client, workdir);
-                eprintln!("\x1b[90m[session cleared]\x1b[0m");
+                eprintln!("  \x1b[35m⟳\x1b[0m \x1b[2msession cleared\x1b[0m");
                 continue;
             }
             _ => {}

@@ -1,5 +1,5 @@
 use crate::client::LlmClient;
-use crate::spinner::{Spinner, Style, ToolProgress};
+use crate::spinner::{self, Spinner, Style, ToolProgress};
 use crate::tools;
 use crate::types::*;
 use std::path::{Path, PathBuf};
@@ -62,7 +62,7 @@ impl Agent {
         let prompt = build_system_prompt(&workdir);
 
         if prompt.len() > SYSTEM_PROMPT.len() {
-            eprintln!("\x1b[90m[loaded STRAP.md]\x1b[0m");
+            eprintln!("  \x1b[32m\x1b[1m✓\x1b[0m \x1b[2mloaded\x1b[0m \x1b[36mSTRAP.md\x1b[0m");
         }
 
         let messages = vec![Message::system(&prompt)];
@@ -100,11 +100,7 @@ impl Agent {
                 let spinner = Spinner::start(&tc.function.name, Style::Bounce);
                 let result = tools::execute(tc, &self.workdir).await;
                 spinner.stop().await;
-                eprintln!(
-                    "\x1b[90m  ✓ {} ({} chars)\x1b[0m",
-                    tc.function.name,
-                    result.len()
-                );
+                spinner::print_tool_done(&tc.function.name, &format!("{} chars", result.len()));
                 self.messages.push(Message::tool_result(&tc.id, &result));
             } else {
                 let mut progress = ToolProgress::new(count);
@@ -126,7 +122,7 @@ impl Agent {
                     self.messages.push(Message::tool_result(&id, &result));
                 }
                 progress.finish();
-                eprintln!("\x1b[90m  ✓ {count} tools completed\x1b[0m");
+                spinner::print_tools_done(count);
             }
         }
 
