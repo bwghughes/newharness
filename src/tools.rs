@@ -1,6 +1,7 @@
 use crate::types::*;
 use serde_json::json;
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 
 /// Returns the tool definitions array sent to the model.
 pub fn tool_definitions() -> Vec<ToolDef> {
@@ -106,6 +107,27 @@ pub fn tool_definitions() -> Vec<ToolDef> {
                 }),
             },
         },
+        ToolDef {
+            kind: "function".into(),
+            function: FunctionDef {
+                name: "web_search".into(),
+                description: "Search the web via Tavily. Returns an AI-generated summary plus ranked results (title, URL, snippet). Use for library docs, recent APIs, error messages, or any external/up-to-date info — not codebase search.".into(),
+                parameters: json!({
+                    "type": "object",
+                    "properties": {
+                        "query": {
+                            "type": "string",
+                            "description": "Search query"
+                        },
+                        "max_results": {
+                            "type": "integer",
+                            "description": "Maximum number of results (default: 5, max: 10)"
+                        }
+                    },
+                    "required": ["query"]
+                }),
+            },
+        },
     ]
 }
 
@@ -122,8 +144,109 @@ pub async fn execute(call: &ToolCall, workdir: &Path) -> String {
         "edit_file" => exec_edit_file(&args, workdir).await,
         "grep" => exec_grep(&args, workdir).await,
         "bash" => exec_bash(&args, workdir).await,
+        "web_search" => exec_web_search(&args).await,
         other => format!("Unknown tool: {other}"),
     }
+}
+
+fn http_client() -> &'static reqwest::Client {
+    static CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
+    CLIENT.get_or_init(|| {
+        reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(30))
+            .build()
+            .expect("failed to build HTTP client")
+    })
+}
+
+async fn exec_web_search(args: &serde_json::Value) -> String {
+    let query = match args.get("query").and_then(|v| v.as_str()) {
+        Some(q) if !q.trim().is_empty() => q,
+        _ => return "Error: missing 'query' parameter".into(),
+    };
+
+    let max_results = args
+        .get("max_results")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(5)
+        .clamp(1, 10);
+
+    let api_key = match std::env::var("STRAPIN_SEARCH_API_KEY") {
+        Ok(k) if !k.is_empty() => k,
+        _ => {
+            return "Error: STRAPIN_SEARCH_API_KEY not set. Get a free key at https://tavily.com"
+                .into()
+        }
+    };
+
+    let body = json!({
+        "api_key": api_key,
+        "query": query,
+        "search_depth": "basic",
+        "max_results": max_results,
+        "include_answer": true,
+    });
+
+    let response = match http_client()
+        .post("https://api.tavily.com/search")
+        .json(&body)
+        .send()
+        .await
+    {
+        Ok(r) => r,
+        Err(e) => return format!("Error calling Tavily: {e}"),
+    };
+
+    let status = response.status();
+    if !status.is_success() {
+        let text = response.text().await.unwrap_or_default();
+        return format!("Tavily API error ({status}): {text}");
+    }
+
+    let data: serde_json::Value = match response.json().await {
+        Ok(d) => d,
+        Err(e) => return format!("Error parsing Tavily response: {e}"),
+    };
+
+    format_tavily_results(&data)
+}
+
+fn format_tavily_results(data: &serde_json::Value) -> String {
+    let mut out = String::new();
+
+    if let Some(answer) = data.get("answer").and_then(|v| v.as_str()) {
+        if !answer.trim().is_empty() {
+            out.push_str("Summary: ");
+            out.push_str(answer);
+            out.push_str("\n\n");
+        }
+    }
+
+    if let Some(results) = data.get("results").and_then(|v| v.as_array()) {
+        for (i, result) in results.iter().enumerate() {
+            let title = result
+                .get("title")
+                .and_then(|v| v.as_str())
+                .unwrap_or("(no title)");
+            let url = result.get("url").and_then(|v| v.as_str()).unwrap_or("");
+            let content = result.get("content").and_then(|v| v.as_str()).unwrap_or("");
+            out.push_str(&format!(
+                "[{}] {title}\n    {url}\n    {content}\n\n",
+                i + 1
+            ));
+        }
+    }
+
+    if out.trim().is_empty() {
+        return "No results.".into();
+    }
+
+    if out.len() > 50_000 {
+        out.truncate(50_000);
+        out.push_str("\n... [truncated]");
+    }
+
+    out
 }
 
 fn resolve_path(raw: &str, workdir: &Path) -> PathBuf {
@@ -367,9 +490,9 @@ mod tests {
     // ── tool_definitions tests ──
 
     #[test]
-    fn tool_definitions_returns_five_tools() {
+    fn tool_definitions_returns_six_tools() {
         let defs = tool_definitions();
-        assert_eq!(defs.len(), 5);
+        assert_eq!(defs.len(), 6);
     }
 
     #[test]
@@ -378,7 +501,14 @@ mod tests {
         let names: Vec<&str> = defs.iter().map(|t| t.function.name.as_str()).collect();
         assert_eq!(
             names,
-            vec!["read_file", "list_dir", "edit_file", "grep", "bash"]
+            vec![
+                "read_file",
+                "list_dir",
+                "edit_file",
+                "grep",
+                "bash",
+                "web_search"
+            ]
         );
     }
 
@@ -410,7 +540,7 @@ mod tests {
         let json = serde_json::to_string(&defs).unwrap();
         let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
         assert!(parsed.is_array());
-        assert_eq!(parsed.as_array().unwrap().len(), 5);
+        assert_eq!(parsed.as_array().unwrap().len(), 6);
     }
 
     // ── resolve_path tests ──
@@ -816,6 +946,81 @@ mod tests {
         let args = json!({"command": "echo 'abc\ndef\nghi' | grep def"});
         let result = exec_bash(&args, dir.path()).await;
         assert_eq!(result.trim(), "def");
+    }
+
+    // ── web_search tests ──
+
+    #[tokio::test]
+    async fn web_search_missing_query() {
+        let args = json!({});
+        let result = exec_web_search(&args).await;
+        assert!(result.contains("missing 'query'"));
+    }
+
+    #[tokio::test]
+    async fn web_search_empty_query() {
+        let args = json!({"query": "   "});
+        let result = exec_web_search(&args).await;
+        assert!(result.contains("missing 'query'"));
+    }
+
+    #[test]
+    fn format_tavily_includes_summary() {
+        let data = json!({
+            "answer": "Rust is a systems programming language.",
+            "results": []
+        });
+        let out = format_tavily_results(&data);
+        assert!(out.contains("Summary: Rust is a systems"));
+    }
+
+    #[test]
+    fn format_tavily_lists_results() {
+        let data = json!({
+            "answer": "",
+            "results": [
+                {"title": "Rust Book", "url": "https://doc.rust-lang.org/book/", "content": "The Rust Programming Language."},
+                {"title": "Async Book", "url": "https://rust-lang.github.io/async-book/", "content": "Async Rust guide."}
+            ]
+        });
+        let out = format_tavily_results(&data);
+        assert!(out.contains("[1] Rust Book"));
+        assert!(out.contains("https://doc.rust-lang.org/book/"));
+        assert!(out.contains("[2] Async Book"));
+        assert!(out.contains("Async Rust guide."));
+    }
+
+    #[test]
+    fn format_tavily_empty_returns_no_results() {
+        let data = json!({"answer": "", "results": []});
+        let out = format_tavily_results(&data);
+        assert_eq!(out, "No results.");
+    }
+
+    #[test]
+    fn format_tavily_handles_missing_fields() {
+        let data = json!({
+            "results": [
+                {"url": "https://example.com"}
+            ]
+        });
+        let out = format_tavily_results(&data);
+        assert!(out.contains("(no title)"));
+        assert!(out.contains("https://example.com"));
+    }
+
+    #[test]
+    fn format_tavily_truncates_large_output() {
+        let big_content = "x".repeat(60_000);
+        let data = json!({
+            "answer": "",
+            "results": [
+                {"title": "t", "url": "u", "content": big_content}
+            ]
+        });
+        let out = format_tavily_results(&data);
+        assert!(out.len() <= 50_100);
+        assert!(out.contains("[truncated]"));
     }
 
     // ── execute dispatch tests ──
