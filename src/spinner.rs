@@ -100,6 +100,46 @@ impl Spinner {
         }
     }
 
+    /// Spinner variant that shows a tool name in cyan plus grey commentary.
+    pub fn start_tool(name: &str, commentary: &str, style: Style) -> Self {
+        let running = Arc::new(AtomicBool::new(true));
+        let running_clone = running.clone();
+        let name = name.to_string();
+        let commentary = commentary.to_string();
+        let frames = style.frames();
+        let interval = style.interval_ms();
+
+        let handle = tokio::spawn(async move {
+            let mut stderr = io::stderr();
+            let mut i = 0;
+            while running_clone.load(Ordering::Relaxed) {
+                let frame = frames[i % frames.len()];
+                let color = GRADIENT[i % GRADIENT.len()];
+                if commentary.is_empty() {
+                    let _ = write!(
+                        stderr,
+                        "\r  {color}{BOLD}{frame}{RESET} {CYAN}{name}{RESET}\x1b[K"
+                    );
+                } else {
+                    let _ = write!(
+                        stderr,
+                        "\r  {color}{BOLD}{frame}{RESET} {CYAN}{name}{RESET} {DIM}{commentary}{RESET}\x1b[K"
+                    );
+                }
+                let _ = stderr.flush();
+                i += 1;
+                time::sleep(Duration::from_millis(interval)).await;
+            }
+            let _ = write!(stderr, "\r\x1b[K");
+            let _ = stderr.flush();
+        });
+
+        Self {
+            running,
+            handle: Some(handle),
+        }
+    }
+
     pub async fn stop(mut self) {
         self.running.store(false, Ordering::Relaxed);
         if let Some(h) = self.handle.take() {
@@ -133,7 +173,7 @@ impl ToolProgress {
         }
     }
 
-    pub fn tick(&mut self, tool_name: &str) {
+    pub fn tick(&mut self, tool_name: &str, commentary: &str) {
         self.completed += 1;
         let pct = (self.completed as f64 / self.total as f64 * 100.0) as u8;
         let filled = (self.completed * 20) / self.total;
@@ -149,9 +189,15 @@ impl ToolProgress {
 
         let filled_bar = "█".repeat(filled);
         let empty_bar = "░".repeat(empty);
-        eprint!(
-            "\r  {bar_color}{filled_bar}{DIM}{empty_bar}{RESET} {YELLOW}{pct:>3}%{RESET} {MAGENTA}{tool_name}{RESET}\x1b[K"
-        );
+        if commentary.is_empty() {
+            eprint!(
+                "\r  {bar_color}{filled_bar}{DIM}{empty_bar}{RESET} {YELLOW}{pct:>3}%{RESET} {MAGENTA}{tool_name}{RESET}\x1b[K"
+            );
+        } else {
+            eprint!(
+                "\r  {bar_color}{filled_bar}{DIM}{empty_bar}{RESET} {YELLOW}{pct:>3}%{RESET} {MAGENTA}{tool_name}{RESET} {DIM}{commentary}{RESET}\x1b[K"
+            );
+        }
         let _ = io::stderr().flush();
     }
 
@@ -162,8 +208,14 @@ impl ToolProgress {
 }
 
 /// Print a colored tool completion message.
-pub fn print_tool_done(name: &str, detail: &str) {
-    eprintln!("  {GREEN}{BOLD}✓{RESET} {CYAN}{name}{RESET} {DIM}({detail}){RESET}");
+pub fn print_tool_done(name: &str, commentary: &str, detail: &str) {
+    if commentary.is_empty() {
+        eprintln!("  {GREEN}{BOLD}✓{RESET} {CYAN}{name}{RESET} {DIM}({detail}){RESET}");
+    } else {
+        eprintln!(
+            "  {GREEN}{BOLD}✓{RESET} {CYAN}{name}{RESET} {DIM}{commentary}{RESET} {DIM}({detail}){RESET}"
+        );
+    }
 }
 
 /// Print a colored multi-tool completion message.
@@ -231,18 +283,18 @@ mod tests {
     #[test]
     fn tool_progress_tracks_completion() {
         let mut prog = ToolProgress::new(3);
-        prog.tick("read_file");
+        prog.tick("read_file", "foo.rs");
         assert_eq!(prog.completed, 1);
-        prog.tick("edit_file");
+        prog.tick("edit_file", "bar.rs");
         assert_eq!(prog.completed, 2);
-        prog.tick("bash");
+        prog.tick("bash", "");
         assert_eq!(prog.completed, 3);
     }
 
     #[test]
     fn tool_progress_single_tool() {
         let mut prog = ToolProgress::new(1);
-        prog.tick("bash");
+        prog.tick("bash", "ls -la");
         assert_eq!(prog.completed, 1);
         prog.finish();
     }
@@ -250,18 +302,32 @@ mod tests {
     #[test]
     fn progress_bar_color_changes_with_pct() {
         let mut prog = ToolProgress::new(10);
-        prog.tick("t1");
+        prog.tick("t1", "");
         // 10% — should be cyan range
         assert_eq!(prog.completed, 1);
         for i in 2..=6 {
-            prog.tick(&format!("t{i}"));
+            prog.tick(&format!("t{i}"), "");
         }
         // 60% — should be blue range
         assert_eq!(prog.completed, 6);
         for i in 7..=10 {
-            prog.tick(&format!("t{i}"));
+            prog.tick(&format!("t{i}"), "");
         }
         // 100% — should be green range
         assert_eq!(prog.completed, 10);
+    }
+
+    #[tokio::test]
+    async fn spinner_start_tool_starts_and_stops() {
+        let spinner = Spinner::start_tool("read_file", "src/main.rs", Style::Bounce);
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        spinner.stop().await;
+    }
+
+    #[tokio::test]
+    async fn spinner_start_tool_handles_empty_commentary() {
+        let spinner = Spinner::start_tool("bash", "", Style::Dots);
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        spinner.stop().await;
     }
 }

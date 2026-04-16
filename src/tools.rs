@@ -131,6 +131,70 @@ pub fn tool_definitions() -> Vec<ToolDef> {
     ]
 }
 
+/// Build a short grey-commentary string describing what a tool call is about to do.
+/// Returned text is safe to render on a single line (newlines collapsed, truncated).
+pub fn describe_call(call: &ToolCall) -> String {
+    let args: serde_json::Value =
+        serde_json::from_str(&call.function.arguments).unwrap_or(serde_json::Value::Null);
+
+    let raw = match call.function.name.as_str() {
+        "read_file" | "list_dir" => args
+            .get("path")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string(),
+        "edit_file" => {
+            let path = args.get("path").and_then(|v| v.as_str()).unwrap_or("");
+            let is_create = args
+                .get("old_string")
+                .and_then(|v| v.as_str())
+                .is_none_or(|s| s.is_empty());
+            if is_create {
+                format!("{path} (create)")
+            } else {
+                path.to_string()
+            }
+        }
+        "grep" => {
+            let pattern = args.get("pattern").and_then(|v| v.as_str()).unwrap_or("");
+            let glob = args.get("glob").and_then(|v| v.as_str());
+            let path = args.get("path").and_then(|v| v.as_str());
+            let mut s = format!("\"{pattern}\"");
+            if let Some(g) = glob {
+                s.push_str(&format!(" [{g}]"));
+            }
+            if let Some(p) = path {
+                s.push_str(&format!(" in {p}"));
+            }
+            s
+        }
+        "bash" => args
+            .get("command")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string(),
+        "web_search" => {
+            let q = args.get("query").and_then(|v| v.as_str()).unwrap_or("");
+            format!("\"{q}\"")
+        }
+        _ => String::new(),
+    };
+
+    let flat: String = raw
+        .chars()
+        .map(|c| if c == '\n' || c == '\r' { ' ' } else { c })
+        .collect();
+    let collapsed: String = flat.split_whitespace().collect::<Vec<_>>().join(" ");
+
+    const MAX: usize = 60;
+    if collapsed.chars().count() > MAX {
+        let truncated: String = collapsed.chars().take(MAX - 1).collect();
+        format!("{truncated}…")
+    } else {
+        collapsed
+    }
+}
+
 /// Execute a tool call and return the result string.
 pub async fn execute(call: &ToolCall, workdir: &Path) -> String {
     let args: serde_json::Value = match serde_json::from_str(&call.function.arguments) {
@@ -1021,6 +1085,112 @@ mod tests {
         let out = format_tavily_results(&data);
         assert!(out.len() <= 50_100);
         assert!(out.contains("[truncated]"));
+    }
+
+    // ── describe_call tests ──
+
+    fn tc(name: &str, args: serde_json::Value) -> ToolCall {
+        ToolCall {
+            id: "tc".into(),
+            kind: "function".into(),
+            function: FunctionCall {
+                name: name.into(),
+                arguments: args.to_string(),
+            },
+        }
+    }
+
+    #[test]
+    fn describe_read_file_uses_path() {
+        let c = tc("read_file", json!({"path": "src/main.rs"}));
+        assert_eq!(describe_call(&c), "src/main.rs");
+    }
+
+    #[test]
+    fn describe_list_dir_uses_path() {
+        let c = tc("list_dir", json!({"path": "src"}));
+        assert_eq!(describe_call(&c), "src");
+    }
+
+    #[test]
+    fn describe_edit_file_shows_create_marker() {
+        let c = tc(
+            "edit_file",
+            json!({"path": "new.rs", "old_string": "", "new_string": "x"}),
+        );
+        assert_eq!(describe_call(&c), "new.rs (create)");
+    }
+
+    #[test]
+    fn describe_edit_file_edit_just_shows_path() {
+        let c = tc(
+            "edit_file",
+            json!({"path": "main.rs", "old_string": "old", "new_string": "new"}),
+        );
+        assert_eq!(describe_call(&c), "main.rs");
+    }
+
+    #[test]
+    fn describe_grep_includes_pattern() {
+        let c = tc("grep", json!({"pattern": "fn main"}));
+        assert_eq!(describe_call(&c), "\"fn main\"");
+    }
+
+    #[test]
+    fn describe_grep_with_glob_and_path() {
+        let c = tc(
+            "grep",
+            json!({"pattern": "TODO", "glob": "*.rs", "path": "src"}),
+        );
+        assert_eq!(describe_call(&c), "\"TODO\" [*.rs] in src");
+    }
+
+    #[test]
+    fn describe_bash_shows_command() {
+        let c = tc("bash", json!({"command": "cargo test"}));
+        assert_eq!(describe_call(&c), "cargo test");
+    }
+
+    #[test]
+    fn describe_bash_collapses_newlines() {
+        let c = tc("bash", json!({"command": "echo one\necho two"}));
+        assert_eq!(describe_call(&c), "echo one echo two");
+    }
+
+    #[test]
+    fn describe_web_search_quotes_query() {
+        let c = tc("web_search", json!({"query": "rust async"}));
+        assert_eq!(describe_call(&c), "\"rust async\"");
+    }
+
+    #[test]
+    fn describe_truncates_long_commentary() {
+        let long_path = "a/".repeat(100);
+        let c = tc("read_file", json!({"path": long_path}));
+        let desc = describe_call(&c);
+        // 60 chars max including the ellipsis
+        assert!(desc.chars().count() <= 60);
+        assert!(desc.ends_with('…'));
+    }
+
+    #[test]
+    fn describe_unknown_tool_returns_empty() {
+        let c = tc("mystery", json!({"foo": "bar"}));
+        assert_eq!(describe_call(&c), "");
+    }
+
+    #[test]
+    fn describe_handles_invalid_json() {
+        let c = ToolCall {
+            id: "tc".into(),
+            kind: "function".into(),
+            function: FunctionCall {
+                name: "bash".into(),
+                arguments: "not json".into(),
+            },
+        };
+        // Should not panic; args parse fails → Null → empty fields
+        assert_eq!(describe_call(&c), "");
     }
 
     // ── execute dispatch tests ──
