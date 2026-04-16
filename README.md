@@ -70,6 +70,38 @@ All config is via environment variables:
 | `STRAPIN_API_URL` | `https://api.openai.com/v1` | Base URL (falls back to `OPENAI_BASE_URL`) |
 | `STRAPIN_MODEL` | `gpt-4o` | Model name to use |
 | `STRAPIN_WORKDIR` | Current directory | Working directory for file operations |
+| `STRAPIN_VERBOSE` | -- | Set to `1` to enable debug logging of API requests and SSE deltas |
+
+## STRAP.md — Project Rules
+
+Drop a `STRAP.md` file in your project root to give the agent project-specific rules. It's automatically loaded on startup and injected into the system prompt.
+
+```
+[loaded STRAP.md]
+```
+
+The agent searches upward from the working directory, so it works from subdirectories too.
+
+Example `STRAP.md`:
+
+```markdown
+# STRAP.md — Project Rules
+
+## Principles
+- Token efficiency. No filler, no preamble.
+- Test everything. Every change must include tests.
+- Verify your work. Read files back or run tests after edits.
+
+## Code style
+- No comments unless the WHY is non-obvious.
+- Prefer editing over rewriting.
+
+## Testing rules
+- Every new function gets a test.
+- Every bug fix gets a regression test.
+- Test edge cases: empty inputs, unicode, missing files.
+- Run the test suite after changes.
+```
 
 ## Tools
 

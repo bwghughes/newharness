@@ -1,7 +1,7 @@
 use crate::client::LlmClient;
 use crate::tools;
 use crate::types::*;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 const SYSTEM_PROMPT: &str = r#"You are a skilled software engineer with direct access to tools. You MUST use your tools to accomplish tasks — never just describe what you would do.
 
@@ -23,6 +23,30 @@ Tool tips:
 - bash runs in the working directory. Use it for anything the other tools don't cover.
 - Be concise in text responses. Let your tool calls do the talking."#;
 
+/// Try to read STRAP.md from the working directory or its ancestors.
+fn find_strap_md(workdir: &Path) -> Option<String> {
+    let mut dir = workdir.to_path_buf();
+    loop {
+        let candidate = dir.join("STRAP.md");
+        if let Ok(content) = std::fs::read_to_string(&candidate) {
+            return Some(content);
+        }
+        if !dir.pop() {
+            return None;
+        }
+    }
+}
+
+/// Build the full system prompt, appending STRAP.md if found.
+fn build_system_prompt(workdir: &Path) -> String {
+    match find_strap_md(workdir) {
+        Some(rules) => {
+            format!("{SYSTEM_PROMPT}\n\n---\nProject rules (from STRAP.md):\n\n{rules}")
+        }
+        None => SYSTEM_PROMPT.to_string(),
+    }
+}
+
 pub struct Agent {
     client: LlmClient,
     messages: Vec<Message>,
@@ -34,7 +58,13 @@ pub struct Agent {
 impl Agent {
     pub fn new(client: LlmClient, workdir: PathBuf) -> Self {
         let tools = tools::tool_definitions();
-        let messages = vec![Message::system(SYSTEM_PROMPT)];
+        let prompt = build_system_prompt(&workdir);
+
+        if prompt.len() > SYSTEM_PROMPT.len() {
+            eprintln!("\x1b[90m[loaded STRAP.md]\x1b[0m");
+        }
+
+        let messages = vec![Message::system(&prompt)];
 
         Self {
             client,
@@ -278,5 +308,59 @@ mod tests {
         let count_after_first = agent.message_count();
         agent.compact(5);
         assert_eq!(agent.message_count(), count_after_first);
+    }
+
+    // ── STRAP.md tests ──
+
+    #[test]
+    fn find_strap_md_returns_none_for_missing() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(find_strap_md(dir.path()).is_none());
+    }
+
+    #[test]
+    fn find_strap_md_finds_in_current_dir() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("STRAP.md"), "# Rules\nBe fast.").unwrap();
+        let content = find_strap_md(dir.path()).unwrap();
+        assert!(content.contains("Be fast."));
+    }
+
+    #[test]
+    fn find_strap_md_walks_up_to_parent() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("STRAP.md"), "# Parent rules").unwrap();
+        let child = dir.path().join("src");
+        std::fs::create_dir(&child).unwrap();
+        let content = find_strap_md(&child).unwrap();
+        assert!(content.contains("Parent rules"));
+    }
+
+    #[test]
+    fn build_system_prompt_without_strap_md() {
+        let dir = tempfile::tempdir().unwrap();
+        let prompt = build_system_prompt(dir.path());
+        assert!(prompt.contains("software engineer"));
+        assert!(!prompt.contains("STRAP.md"));
+    }
+
+    #[test]
+    fn build_system_prompt_with_strap_md() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("STRAP.md"), "# Custom rules\nAlways test.").unwrap();
+        let prompt = build_system_prompt(dir.path());
+        assert!(prompt.contains("software engineer"));
+        assert!(prompt.contains("Always test."));
+        assert!(prompt.contains("STRAP.md"));
+    }
+
+    #[test]
+    fn agent_with_strap_md_includes_rules_in_prompt() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("STRAP.md"), "# My rules\nNo dead code.").unwrap();
+        let client = LlmClient::new("http://localhost:0/v1", "test-key", "test-model");
+        let agent = Agent::new(client, dir.path().to_path_buf());
+        let system_content = agent.messages()[0].content.as_ref().unwrap();
+        assert!(system_content.contains("No dead code."));
     }
 }
