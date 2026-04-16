@@ -81,14 +81,22 @@ impl Agent {
     pub async fn run_turn(&mut self, user_input: &str) -> Result<(), Box<dyn std::error::Error>> {
         self.messages.push(Message::user(user_input));
 
+        let mut total_prompt = 0u64;
+        let mut total_completion = 0u64;
+
         for _ in 0..self.max_turns {
-            let assistant_msg = self.client.chat_stream(&self.messages, &self.tools).await?;
+            let (assistant_msg, usage) =
+                self.client.chat_stream(&self.messages, &self.tools).await?;
+
+            if let Some(u) = usage {
+                total_prompt += u.prompt_tokens;
+                total_completion += u.completion_tokens;
+            }
 
             let has_tool_calls = assistant_msg.tool_calls.is_some();
             self.messages.push(assistant_msg.clone());
 
             if !has_tool_calls {
-                // Model responded without tool calls — turn is complete
                 break;
             }
 
@@ -130,6 +138,11 @@ impl Agent {
                 progress.finish();
                 spinner::print_tools_done(count);
             }
+        }
+
+        let total = total_prompt + total_completion;
+        if total > 0 {
+            spinner::print_usage(total_prompt, total_completion, total);
         }
 
         Ok(())

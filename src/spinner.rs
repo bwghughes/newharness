@@ -223,6 +223,13 @@ pub fn print_tools_done(count: usize) {
     eprintln!("  {GREEN}{BOLD}✓{RESET} {CYAN}{count} tools{RESET} {DIM}completed{RESET}");
 }
 
+/// Print token usage summary for a completed turn.
+pub fn print_usage(prompt_tokens: u64, completion_tokens: u64, total_tokens: u64) {
+    eprintln!(
+        "\n  {DIM}tokens: {prompt_tokens} prompt + {completion_tokens} completion = {total_tokens} total{RESET}"
+    );
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

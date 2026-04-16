@@ -19,6 +19,7 @@ pub struct LlmClient {
 pub(crate) struct StreamAssembler {
     pub content: String,
     pub tool_calls: Vec<ToolCall>,
+    pub usage: Option<Usage>,
 }
 
 /// Result of processing a single SSE data line.
@@ -39,6 +40,7 @@ impl StreamAssembler {
         Self {
             content: String::new(),
             tool_calls: Vec::new(),
+            usage: None,
         }
     }
 
@@ -69,6 +71,10 @@ impl StreamAssembler {
                 return SseEvent::Ignored;
             }
         };
+
+        if let Some(u) = chunk.usage {
+            self.usage = Some(u);
+        }
 
         let mut got_content = false;
         let mut got_tool = false;
@@ -147,7 +153,7 @@ impl StreamAssembler {
     /// Consume the assembler and produce the final assistant message.
     /// Filters out incomplete tool calls (empty name = filler entry) and
     /// generates fallback IDs for providers that don't include them.
-    pub fn finish(self) -> Message {
+    pub fn finish(self) -> (Message, Option<Usage>) {
         let content = if self.content.is_empty() {
             None
         } else {
@@ -158,10 +164,7 @@ impl StreamAssembler {
             .tool_calls
             .into_iter()
             .enumerate()
-            .filter(|(_, tc)| {
-                // Keep entries that have a name OR have arguments (not just filler padding)
-                !tc.function.name.is_empty() || !tc.function.arguments.is_empty()
-            })
+            .filter(|(_, tc)| !tc.function.name.is_empty() || !tc.function.arguments.is_empty())
             .map(|(i, mut tc)| {
                 if tc.id.is_empty() {
                     tc.id = format!("call_{i}");
@@ -175,7 +178,7 @@ impl StreamAssembler {
         } else {
             Some(valid_calls)
         };
-        Message::assistant(content, tc)
+        (Message::assistant(content, tc), self.usage)
     }
 }
 
@@ -201,7 +204,7 @@ impl LlmClient {
         &self,
         messages: &[Message],
         tools: &[ToolDef],
-    ) -> Result<Message, Box<dyn std::error::Error>> {
+    ) -> Result<(Message, Option<Usage>), Box<dyn std::error::Error>> {
         let url = format!("{}/chat/completions", self.base_url);
 
         let (tools_param, tool_choice) = if tools.is_empty() {
@@ -216,6 +219,9 @@ impl LlmClient {
             tools: tools_param,
             tool_choice,
             stream: true,
+            stream_options: Some(StreamOptions {
+                include_usage: true,
+            }),
             temperature: Some(0.0),
             max_tokens: Some(16384),
         };
@@ -311,7 +317,7 @@ impl LlmClient {
             }
         }
 
-        let msg = assembler.finish();
+        let (msg, usage) = assembler.finish();
 
         if verbose {
             if let Some(ref tcs) = msg.tool_calls {
@@ -326,9 +332,15 @@ impl LlmClient {
             } else {
                 eprintln!("\x1b[90m[debug] no tool_calls in response\x1b[0m");
             }
+            if let Some(ref u) = usage {
+                eprintln!(
+                    "\x1b[90m[debug] usage: prompt={} completion={} total={}\x1b[0m",
+                    u.prompt_tokens, u.completion_tokens, u.total_tokens
+                );
+            }
         }
 
-        Ok(msg)
+        Ok((msg, usage))
     }
 }
 
@@ -348,7 +360,7 @@ mod tests {
     #[test]
     fn assembler_finish_empty_produces_none_fields() {
         let a = StreamAssembler::new();
-        let msg = a.finish();
+        let (msg, _usage) = a.finish();
         assert_eq!(msg.role, "assistant");
         assert!(msg.content.is_none());
         assert!(msg.tool_calls.is_none());
@@ -358,7 +370,7 @@ mod tests {
     fn assembler_finish_with_content() {
         let mut a = StreamAssembler::new();
         a.content = "hello world".into();
-        let msg = a.finish();
+        let (msg, _usage) = a.finish();
         assert_eq!(msg.content.unwrap(), "hello world");
         assert!(msg.tool_calls.is_none());
     }
@@ -374,7 +386,7 @@ mod tests {
                 arguments: r#"{"path":"test.rs"}"#.into(),
             },
         });
-        let msg = a.finish();
+        let (msg, _usage) = a.finish();
         assert!(msg.content.is_none());
         let tcs = msg.tool_calls.unwrap();
         assert_eq!(tcs.len(), 1);
@@ -614,7 +626,7 @@ mod tests {
         a.apply_tool_call_delta(&delta);
         assert_eq!(a.tool_calls.len(), 3);
 
-        let msg = a.finish();
+        let (msg, _usage) = a.finish();
         let tcs = msg.tool_calls.unwrap();
         // Only the valid entry should remain
         assert_eq!(tcs.len(), 1);
@@ -634,7 +646,7 @@ mod tests {
                 arguments: r#"{"path":"test.rs"}"#.into(),
             },
         });
-        let msg = a.finish();
+        let (msg, _usage) = a.finish();
         let tcs = msg.tool_calls.unwrap();
         assert_eq!(tcs.len(), 1);
         assert_eq!(tcs[0].id, "call_0");
@@ -652,7 +664,7 @@ mod tests {
                 arguments: "{}".into(),
             },
         });
-        let msg = a.finish();
+        let (msg, _usage) = a.finish();
         let tcs = msg.tool_calls.unwrap();
         assert_eq!(tcs[0].id, "real_id_123");
     }
@@ -669,7 +681,7 @@ mod tests {
                 arguments: String::new(),
             },
         });
-        let msg = a.finish();
+        let (msg, _usage) = a.finish();
         assert!(msg.tool_calls.is_none());
     }
 
@@ -701,7 +713,7 @@ mod tests {
                 arguments: "{}".into(),
             },
         });
-        let msg = a.finish();
+        let (msg, _usage) = a.finish();
         let tcs = msg.tool_calls.unwrap();
         assert_eq!(tcs.len(), 2);
         assert_eq!(tcs[0].function.name, "read_file");
@@ -721,7 +733,7 @@ mod tests {
                 },
             });
         }
-        let msg = a.finish();
+        let (msg, _usage) = a.finish();
         let tcs = msg.tool_calls.unwrap();
         assert_eq!(tcs[0].id, "call_0");
         assert_eq!(tcs[1].id, "call_1");
