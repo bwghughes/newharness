@@ -184,20 +184,37 @@ impl LlmClient {
     ) -> Result<Message, Box<dyn std::error::Error>> {
         let url = format!("{}/chat/completions", self.base_url);
 
-        let tools_param = if tools.is_empty() {
-            None
+        let (tools_param, tool_choice) = if tools.is_empty() {
+            (None, None)
         } else {
-            Some(tools.to_vec())
+            (Some(tools.to_vec()), Some(serde_json::json!("auto")))
         };
 
         let req = ChatRequest {
             model: self.model.clone(),
             messages: messages.to_vec(),
             tools: tools_param,
+            tool_choice,
             stream: true,
             temperature: Some(0.0),
             max_tokens: Some(16384),
         };
+
+        if std::env::var("STRAPIN_VERBOSE").is_ok() {
+            let tool_names: Vec<&str> = req
+                .tools
+                .as_ref()
+                .map(|t| t.iter().map(|td| td.function.name.as_str()).collect())
+                .unwrap_or_default();
+            eprintln!(
+                "\x1b[90m[debug] POST {} | model={} | tools=[{}] | tool_choice={} | messages={}\x1b[0m",
+                url,
+                req.model,
+                tool_names.join(", "),
+                req.tool_choice.as_ref().map(|v| v.to_string()).unwrap_or("none".into()),
+                req.messages.len(),
+            );
+        }
 
         let resp = self
             .http
@@ -242,7 +259,34 @@ impl LlmClient {
             let _ = writeln!(stdout);
         }
 
-        Ok(assembler.finish())
+        let verbose = std::env::var("STRAPIN_VERBOSE").is_ok();
+
+        if verbose {
+            eprintln!(
+                "\x1b[90m[debug] content={} chars, raw_tool_calls={}, valid after filter\x1b[0m",
+                assembler.content.len(),
+                assembler.tool_calls.len(),
+            );
+        }
+
+        let msg = assembler.finish();
+
+        if verbose {
+            if let Some(ref tcs) = msg.tool_calls {
+                for tc in tcs {
+                    eprintln!(
+                        "\x1b[90m[debug] tool_call id={} name={} args={}...\x1b[0m",
+                        tc.id,
+                        tc.function.name,
+                        &tc.function.arguments[..tc.function.arguments.len().min(80)]
+                    );
+                }
+            } else {
+                eprintln!("\x1b[90m[debug] no tool_calls in response\x1b[0m");
+            }
+        }
+
+        Ok(msg)
     }
 }
 

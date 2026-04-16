@@ -8,6 +8,8 @@ pub struct ChatRequest {
     pub messages: Vec<Message>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tools: Option<Vec<ToolDef>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_choice: Option<serde_json::Value>,
     pub stream: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub temperature: Option<f32>,
@@ -280,6 +282,7 @@ mod tests {
             model: "gpt-4o".into(),
             messages: vec![Message::user("hi")],
             tools: None,
+            tool_choice: None,
             stream: true,
             temperature: None,
             max_tokens: None,
@@ -288,6 +291,7 @@ mod tests {
         assert_eq!(json["model"], "gpt-4o");
         assert_eq!(json["stream"], true);
         assert!(json.get("tools").is_none());
+        assert!(json.get("tool_choice").is_none());
         assert!(json.get("temperature").is_none());
         assert!(json.get("max_tokens").is_none());
     }
@@ -298,6 +302,7 @@ mod tests {
             model: "gpt-4o".into(),
             messages: vec![Message::user("hi")],
             tools: Some(vec![]),
+            tool_choice: Some(json!("auto")),
             stream: false,
             temperature: Some(0.7),
             max_tokens: Some(1024),
@@ -306,6 +311,7 @@ mod tests {
         assert!((json["temperature"].as_f64().unwrap() - 0.7).abs() < 0.001);
         assert_eq!(json["max_tokens"], 1024);
         assert!(json["tools"].is_array());
+        assert_eq!(json["tool_choice"], "auto");
     }
 
     // ── Deserialization tests ──
