@@ -12,9 +12,16 @@ pub struct ChatRequest {
     pub tool_choice: Option<serde_json::Value>,
     pub stream: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub stream_options: Option<StreamOptions>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub temperature: Option<f32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max_tokens: Option<u32>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct StreamOptions {
+    pub include_usage: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -100,9 +107,17 @@ pub struct FunctionCall {
 
 // ── Streaming response types ──
 
+#[derive(Debug, Clone, Copy, Default, Deserialize)]
+pub struct Usage {
+    pub prompt_tokens: u64,
+    pub completion_tokens: u64,
+    pub total_tokens: u64,
+}
+
 #[derive(Debug, Deserialize)]
 pub struct StreamChunk {
     pub choices: Vec<StreamChoice>,
+    pub usage: Option<Usage>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -284,6 +299,7 @@ mod tests {
             tools: None,
             tool_choice: None,
             stream: true,
+            stream_options: None,
             temperature: None,
             max_tokens: None,
         };
@@ -292,6 +308,7 @@ mod tests {
         assert_eq!(json["stream"], true);
         assert!(json.get("tools").is_none());
         assert!(json.get("tool_choice").is_none());
+        assert!(json.get("stream_options").is_none());
         assert!(json.get("temperature").is_none());
         assert!(json.get("max_tokens").is_none());
     }
@@ -304,6 +321,9 @@ mod tests {
             tools: Some(vec![]),
             tool_choice: Some(json!("auto")),
             stream: false,
+            stream_options: Some(StreamOptions {
+                include_usage: true,
+            }),
             temperature: Some(0.7),
             max_tokens: Some(1024),
         };
@@ -312,6 +332,7 @@ mod tests {
         assert_eq!(json["max_tokens"], 1024);
         assert!(json["tools"].is_array());
         assert_eq!(json["tool_choice"], "auto");
+        assert_eq!(json["stream_options"]["include_usage"], true);
     }
 
     // ── Deserialization tests ──
@@ -387,6 +408,31 @@ mod tests {
         assert_eq!(resp.choices.len(), 1);
         assert_eq!(resp.choices[0].message.role, "assistant");
         assert_eq!(resp.choices[0].finish_reason.as_ref().unwrap(), "stop");
+    }
+
+    #[test]
+    fn usage_defaults_to_zero() {
+        let u = Usage::default();
+        assert_eq!(u.prompt_tokens, 0);
+        assert_eq!(u.completion_tokens, 0);
+        assert_eq!(u.total_tokens, 0);
+    }
+
+    #[test]
+    fn stream_chunk_deserializes_with_usage() {
+        let json = r#"{"choices":[],"usage":{"prompt_tokens":100,"completion_tokens":50,"total_tokens":150}}"#;
+        let chunk: StreamChunk = serde_json::from_str(json).unwrap();
+        let u = chunk.usage.unwrap();
+        assert_eq!(u.prompt_tokens, 100);
+        assert_eq!(u.completion_tokens, 50);
+        assert_eq!(u.total_tokens, 150);
+    }
+
+    #[test]
+    fn stream_chunk_deserializes_without_usage() {
+        let json = r#"{"choices":[{"delta":{"content":"hi"},"finish_reason":null}]}"#;
+        let chunk: StreamChunk = serde_json::from_str(json).unwrap();
+        assert!(chunk.usage.is_none());
     }
 
     #[test]

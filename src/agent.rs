@@ -81,14 +81,22 @@ impl Agent {
     pub async fn run_turn(&mut self, user_input: &str) -> Result<(), Box<dyn std::error::Error>> {
         self.messages.push(Message::user(user_input));
 
+        let mut total_prompt = 0u64;
+        let mut total_completion = 0u64;
+
         for _ in 0..self.max_turns {
-            let assistant_msg = self.client.chat_stream(&self.messages, &self.tools).await?;
+            let (assistant_msg, usage) =
+                self.client.chat_stream(&self.messages, &self.tools).await?;
+
+            if let Some(u) = usage {
+                total_prompt += u.prompt_tokens;
+                total_completion += u.completion_tokens;
+            }
 
             let has_tool_calls = assistant_msg.tool_calls.is_some();
             self.messages.push(assistant_msg.clone());
 
             if !has_tool_calls {
-                // Model responded without tool calls — turn is complete
                 break;
             }
 
@@ -97,10 +105,15 @@ impl Agent {
 
             if count == 1 {
                 let tc = &tool_calls[0];
-                let spinner = Spinner::start(&tc.function.name, Style::Bounce);
+                let commentary = tools::describe_call(tc);
+                let spinner = Spinner::start_tool(&tc.function.name, &commentary, Style::Bounce);
                 let result = tools::execute(tc, &self.workdir).await;
                 spinner.stop().await;
-                spinner::print_tool_done(&tc.function.name, &format!("{} chars", result.len()));
+                spinner::print_tool_done(
+                    &tc.function.name,
+                    &commentary,
+                    &format!("{} chars", result.len()),
+                );
                 self.messages.push(Message::tool_result(&tc.id, &result));
             } else {
                 let mut progress = ToolProgress::new(count);
@@ -108,22 +121,28 @@ impl Agent {
                     .iter()
                     .map(|tc| {
                         let tc = tc.clone();
+                        let commentary = tools::describe_call(&tc);
                         let workdir = self.workdir.clone();
                         tokio::spawn(async move {
                             let result = tools::execute(&tc, &workdir).await;
-                            (tc.id.clone(), tc.function.name.clone(), result)
+                            (tc.id.clone(), tc.function.name.clone(), commentary, result)
                         })
                     })
                     .collect();
 
                 for handle in futures {
-                    let (id, name, result) = handle.await?;
-                    progress.tick(&name);
+                    let (id, name, commentary, result) = handle.await?;
+                    progress.tick(&name, &commentary);
                     self.messages.push(Message::tool_result(&id, &result));
                 }
                 progress.finish();
                 spinner::print_tools_done(count);
             }
+        }
+
+        let total = total_prompt + total_completion;
+        if total > 0 {
+            spinner::print_usage(total_prompt, total_completion, total);
         }
 
         Ok(())
