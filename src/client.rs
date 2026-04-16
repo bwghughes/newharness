@@ -128,16 +128,32 @@ impl StreamAssembler {
     }
 
     /// Consume the assembler and produce the final assistant message.
+    /// Filters out incomplete tool calls (empty name = filler entry) and
+    /// generates fallback IDs for providers that don't include them.
     pub fn finish(self) -> Message {
         let content = if self.content.is_empty() {
             None
         } else {
             Some(self.content)
         };
-        let tc = if self.tool_calls.is_empty() {
+
+        let valid_calls: Vec<ToolCall> = self
+            .tool_calls
+            .into_iter()
+            .enumerate()
+            .filter(|(_, tc)| !tc.function.name.is_empty())
+            .map(|(i, mut tc)| {
+                if tc.id.is_empty() {
+                    tc.id = format!("call_{i}");
+                }
+                tc
+            })
+            .collect();
+
+        let tc = if valid_calls.is_empty() {
             None
         } else {
-            Some(self.tool_calls)
+            Some(valid_calls)
         };
         Message::assistant(content, tc)
     }
@@ -492,5 +508,137 @@ mod tests {
         let c = LlmClient::new("http://localhost:11434/v1", "test-key", "llama3");
         assert_eq!(c.api_key, "test-key");
         assert_eq!(c.model, "llama3");
+    }
+
+    // ── finish() filtering and fallback ID tests ──
+
+    #[test]
+    fn finish_filters_out_filler_entries_with_empty_name() {
+        let mut a = StreamAssembler::new();
+        // Simulate sparse index: delta at index 2 creates fillers at 0 and 1
+        let delta = DeltaToolCall {
+            index: 2,
+            id: Some("tc_3".into()),
+            kind: None,
+            function: Some(DeltaFunction {
+                name: Some("grep".into()),
+                arguments: Some("{}".into()),
+            }),
+        };
+        a.apply_tool_call_delta(&delta);
+        assert_eq!(a.tool_calls.len(), 3);
+
+        let msg = a.finish();
+        let tcs = msg.tool_calls.unwrap();
+        // Only the valid entry should remain
+        assert_eq!(tcs.len(), 1);
+        assert_eq!(tcs[0].function.name, "grep");
+        assert_eq!(tcs[0].id, "tc_3");
+    }
+
+    #[test]
+    fn finish_generates_fallback_id_when_missing() {
+        let mut a = StreamAssembler::new();
+        // Some providers don't include tool call IDs in streaming
+        a.tool_calls.push(ToolCall {
+            id: String::new(),
+            kind: "function".into(),
+            function: FunctionCall {
+                name: "read_file".into(),
+                arguments: r#"{"path":"test.rs"}"#.into(),
+            },
+        });
+        let msg = a.finish();
+        let tcs = msg.tool_calls.unwrap();
+        assert_eq!(tcs.len(), 1);
+        assert_eq!(tcs[0].id, "call_0");
+        assert_eq!(tcs[0].function.name, "read_file");
+    }
+
+    #[test]
+    fn finish_preserves_existing_ids() {
+        let mut a = StreamAssembler::new();
+        a.tool_calls.push(ToolCall {
+            id: "real_id_123".into(),
+            kind: "function".into(),
+            function: FunctionCall {
+                name: "bash".into(),
+                arguments: "{}".into(),
+            },
+        });
+        let msg = a.finish();
+        let tcs = msg.tool_calls.unwrap();
+        assert_eq!(tcs[0].id, "real_id_123");
+    }
+
+    #[test]
+    fn finish_filters_all_empty_returns_none() {
+        let mut a = StreamAssembler::new();
+        // Only filler entries, no real tool calls
+        a.tool_calls.push(ToolCall {
+            id: String::new(),
+            kind: "function".into(),
+            function: FunctionCall {
+                name: String::new(),
+                arguments: String::new(),
+            },
+        });
+        let msg = a.finish();
+        assert!(msg.tool_calls.is_none());
+    }
+
+    #[test]
+    fn finish_mixed_valid_and_filler() {
+        let mut a = StreamAssembler::new();
+        a.tool_calls.push(ToolCall {
+            id: "tc_1".into(),
+            kind: "function".into(),
+            function: FunctionCall {
+                name: "read_file".into(),
+                arguments: "{}".into(),
+            },
+        });
+        // Filler
+        a.tool_calls.push(ToolCall {
+            id: String::new(),
+            kind: "function".into(),
+            function: FunctionCall {
+                name: String::new(),
+                arguments: String::new(),
+            },
+        });
+        a.tool_calls.push(ToolCall {
+            id: "tc_3".into(),
+            kind: "function".into(),
+            function: FunctionCall {
+                name: "bash".into(),
+                arguments: "{}".into(),
+            },
+        });
+        let msg = a.finish();
+        let tcs = msg.tool_calls.unwrap();
+        assert_eq!(tcs.len(), 2);
+        assert_eq!(tcs[0].function.name, "read_file");
+        assert_eq!(tcs[1].function.name, "bash");
+    }
+
+    #[test]
+    fn finish_generates_sequential_fallback_ids() {
+        let mut a = StreamAssembler::new();
+        for i in 0..3 {
+            a.tool_calls.push(ToolCall {
+                id: String::new(),
+                kind: "function".into(),
+                function: FunctionCall {
+                    name: format!("tool_{i}"),
+                    arguments: "{}".into(),
+                },
+            });
+        }
+        let msg = a.finish();
+        let tcs = msg.tool_calls.unwrap();
+        assert_eq!(tcs[0].id, "call_0");
+        assert_eq!(tcs[1].id, "call_1");
+        assert_eq!(tcs[2].id, "call_2");
     }
 }
