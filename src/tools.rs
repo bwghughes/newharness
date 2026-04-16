@@ -68,13 +68,13 @@ pub fn tool_definitions() -> Vec<ToolDef> {
             kind: "function".into(),
             function: FunctionDef {
                 name: "grep".into(),
-                description: "Search for a pattern in files recursively. Returns matching lines with file paths and line numbers.".into(),
+                description: "Search for a regex pattern in files recursively using ripgrep. Returns matching lines with file paths and line numbers. Respects .gitignore.".into(),
                 parameters: json!({
                     "type": "object",
                     "properties": {
                         "pattern": {
                             "type": "string",
-                            "description": "Search pattern (substring match, case-insensitive)"
+                            "description": "Regex pattern to search for (case-insensitive). Use \\b for word boundaries."
                         },
                         "path": {
                             "type": "string",
@@ -262,20 +262,21 @@ async fn exec_grep(args: &serde_json::Value, workdir: &Path) -> String {
         .unwrap_or_else(|| workdir.to_path_buf());
 
     let mut cmd_args = vec![
-        "-r".to_string(),
         "-n".to_string(),
         "-i".to_string(),
-        "--include".to_string(),
+        "--no-heading".to_string(),
     ];
 
-    let glob_pattern = args.get("glob").and_then(|v| v.as_str()).unwrap_or("*");
-    cmd_args.push(glob_pattern.to_string());
+    if let Some(glob) = args.get("glob").and_then(|v| v.as_str()) {
+        cmd_args.push("-g".to_string());
+        cmd_args.push(glob.to_string());
+    }
 
     cmd_args.push("--".to_string());
     cmd_args.push(pattern.to_string());
     cmd_args.push(search_path.to_string_lossy().to_string());
 
-    match tokio::process::Command::new("grep")
+    match tokio::process::Command::new("rg")
         .args(&cmd_args)
         .output()
         .await
@@ -292,7 +293,7 @@ async fn exec_grep(args: &serde_json::Value, workdir: &Path) -> String {
                 result
             }
         }
-        Err(e) => format!("Error running grep: {e}"),
+        Err(e) => format!("Error running rg: {e}"),
     }
 }
 
