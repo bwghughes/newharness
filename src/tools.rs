@@ -240,7 +240,11 @@ async fn exec_edit_file(args: &serde_json::Value, workdir: &Path) -> String {
 
     let new_content = content.replacen(old_string, new_string, 1);
     match tokio::fs::write(&path, &new_content).await {
-        Ok(()) => format!("Edited {} ({} bytes written)", path.display(), new_content.len()),
+        Ok(()) => format!(
+            "Edited {} ({} bytes written)",
+            path.display(),
+            new_content.len()
+        ),
         Err(e) => format!("Error writing {}: {e}", path.display()),
     }
 }
@@ -264,10 +268,7 @@ async fn exec_grep(args: &serde_json::Value, workdir: &Path) -> String {
         "--include".to_string(),
     ];
 
-    let glob_pattern = args
-        .get("glob")
-        .and_then(|v| v.as_str())
-        .unwrap_or("*");
+    let glob_pattern = args.get("glob").and_then(|v| v.as_str()).unwrap_or("*");
     cmd_args.push(glob_pattern.to_string());
 
     cmd_args.push("--".to_string());
@@ -293,6 +294,13 @@ async fn exec_grep(args: &serde_json::Value, workdir: &Path) -> String {
         }
         Err(e) => format!("Error running grep: {e}"),
     }
+}
+
+/// Resolve a user-supplied path relative to the working directory.
+/// Exposed for testing.
+#[cfg(test)]
+pub(crate) fn resolve_path_pub(raw: &str, workdir: &Path) -> PathBuf {
+    resolve_path(raw, workdir)
 }
 
 async fn exec_bash(args: &serde_json::Value, workdir: &Path) -> String {
@@ -341,5 +349,567 @@ async fn exec_bash(args: &serde_json::Value, workdir: &Path) -> String {
             }
         }
         Err(e) => format!("Error running command: {e}"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+    use std::fs;
+    use tempfile::TempDir;
+
+    fn tmp() -> TempDir {
+        tempfile::tempdir().unwrap()
+    }
+
+    // ── tool_definitions tests ──
+
+    #[test]
+    fn tool_definitions_returns_five_tools() {
+        let defs = tool_definitions();
+        assert_eq!(defs.len(), 5);
+    }
+
+    #[test]
+    fn tool_definitions_names_are_correct() {
+        let defs = tool_definitions();
+        let names: Vec<&str> = defs.iter().map(|t| t.function.name.as_str()).collect();
+        assert_eq!(
+            names,
+            vec!["read_file", "list_dir", "edit_file", "grep", "bash"]
+        );
+    }
+
+    #[test]
+    fn tool_definitions_all_have_function_type() {
+        for def in tool_definitions() {
+            assert_eq!(def.kind, "function");
+        }
+    }
+
+    #[test]
+    fn tool_definitions_all_have_descriptions() {
+        for def in tool_definitions() {
+            assert!(!def.function.description.is_empty());
+        }
+    }
+
+    #[test]
+    fn tool_definitions_parameters_are_objects() {
+        for def in tool_definitions() {
+            assert_eq!(def.function.parameters["type"], "object");
+            assert!(def.function.parameters.get("properties").is_some());
+        }
+    }
+
+    #[test]
+    fn tool_definitions_serialize_to_valid_json() {
+        let defs = tool_definitions();
+        let json = serde_json::to_string(&defs).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert!(parsed.is_array());
+        assert_eq!(parsed.as_array().unwrap().len(), 5);
+    }
+
+    // ── resolve_path tests ──
+
+    #[test]
+    fn resolve_path_relative() {
+        let wd = Path::new("/home/user/project");
+        let p = resolve_path_pub("src/main.rs", wd);
+        assert_eq!(p, PathBuf::from("/home/user/project/src/main.rs"));
+    }
+
+    #[test]
+    fn resolve_path_absolute() {
+        let wd = Path::new("/home/user/project");
+        let p = resolve_path_pub("/etc/passwd", wd);
+        assert_eq!(p, PathBuf::from("/etc/passwd"));
+    }
+
+    // ── read_file tests ──
+
+    #[tokio::test]
+    async fn read_file_returns_numbered_lines() {
+        let dir = tmp();
+        fs::write(
+            dir.path().join("hello.txt"),
+            "line one\nline two\nline three",
+        )
+        .unwrap();
+
+        let args = json!({"path": "hello.txt"});
+        let result = exec_read_file(&args, dir.path()).await;
+
+        assert!(result.contains("   1\tline one"));
+        assert!(result.contains("   2\tline two"));
+        assert!(result.contains("   3\tline three"));
+    }
+
+    #[tokio::test]
+    async fn read_file_error_on_missing_file() {
+        let dir = tmp();
+        let args = json!({"path": "nonexistent.txt"});
+        let result = exec_read_file(&args, dir.path()).await;
+        assert!(result.starts_with("Error reading"));
+    }
+
+    #[tokio::test]
+    async fn read_file_missing_path_param() {
+        let dir = tmp();
+        let args = json!({});
+        let result = exec_read_file(&args, dir.path()).await;
+        assert!(result.contains("missing 'path'"));
+    }
+
+    #[tokio::test]
+    async fn read_file_handles_empty_file() {
+        let dir = tmp();
+        fs::write(dir.path().join("empty.txt"), "").unwrap();
+        let args = json!({"path": "empty.txt"});
+        let result = exec_read_file(&args, dir.path()).await;
+        // Empty file — no lines
+        assert!(result.is_empty() || result.trim().is_empty());
+    }
+
+    #[tokio::test]
+    async fn read_file_handles_unicode() {
+        let dir = tmp();
+        fs::write(dir.path().join("unicode.txt"), "日本語テスト\némojis 🎉").unwrap();
+        let args = json!({"path": "unicode.txt"});
+        let result = exec_read_file(&args, dir.path()).await;
+        assert!(result.contains("日本語テスト"));
+        assert!(result.contains("🎉"));
+    }
+
+    #[tokio::test]
+    async fn read_file_truncates_large_content() {
+        let dir = tmp();
+        // Create a file >100KB
+        let big = "x".repeat(200_000);
+        fs::write(dir.path().join("big.txt"), &big).unwrap();
+        let args = json!({"path": "big.txt"});
+        let result = exec_read_file(&args, dir.path()).await;
+        assert!(result.contains("[truncated at 100KB]"));
+        assert!(result.len() < 110_000);
+    }
+
+    // ── list_dir tests ──
+
+    #[tokio::test]
+    async fn list_dir_shows_files_and_dirs() {
+        let dir = tmp();
+        fs::write(dir.path().join("file.txt"), "").unwrap();
+        fs::create_dir(dir.path().join("subdir")).unwrap();
+
+        let args = json!({});
+        let result = exec_list_dir(&args, dir.path()).await;
+
+        assert!(result.contains("file.txt"));
+        assert!(result.contains("subdir/"));
+    }
+
+    #[tokio::test]
+    async fn list_dir_skips_hidden_files() {
+        let dir = tmp();
+        fs::write(dir.path().join(".hidden"), "").unwrap();
+        fs::write(dir.path().join("visible.txt"), "").unwrap();
+
+        let args = json!({});
+        let result = exec_list_dir(&args, dir.path()).await;
+
+        assert!(!result.contains(".hidden"));
+        assert!(result.contains("visible.txt"));
+    }
+
+    #[tokio::test]
+    async fn list_dir_sorted_output() {
+        let dir = tmp();
+        fs::write(dir.path().join("zebra.txt"), "").unwrap();
+        fs::write(dir.path().join("alpha.txt"), "").unwrap();
+        fs::write(dir.path().join("middle.txt"), "").unwrap();
+
+        let args = json!({});
+        let result = exec_list_dir(&args, dir.path()).await;
+        let lines: Vec<&str> = result.lines().collect();
+
+        assert_eq!(lines, vec!["alpha.txt", "middle.txt", "zebra.txt"]);
+    }
+
+    #[tokio::test]
+    async fn list_dir_with_explicit_path() {
+        let dir = tmp();
+        let sub = dir.path().join("sub");
+        fs::create_dir(&sub).unwrap();
+        fs::write(sub.join("inner.txt"), "").unwrap();
+
+        let args = json!({"path": "sub"});
+        let result = exec_list_dir(&args, dir.path()).await;
+        assert!(result.contains("inner.txt"));
+    }
+
+    #[tokio::test]
+    async fn list_dir_error_on_missing_dir() {
+        let dir = tmp();
+        let args = json!({"path": "no_such_dir"});
+        let result = exec_list_dir(&args, dir.path()).await;
+        assert!(result.starts_with("Error listing"));
+    }
+
+    #[tokio::test]
+    async fn list_dir_empty_directory() {
+        let dir = tmp();
+        let args = json!({});
+        let result = exec_list_dir(&args, dir.path()).await;
+        assert!(result.is_empty());
+    }
+
+    // ── edit_file tests ──
+
+    #[tokio::test]
+    async fn edit_file_creates_new_file() {
+        let dir = tmp();
+        let args = json!({
+            "path": "new.txt",
+            "old_string": "",
+            "new_string": "hello world"
+        });
+        let result = exec_edit_file(&args, dir.path()).await;
+        assert!(result.contains("Created"));
+
+        let content = fs::read_to_string(dir.path().join("new.txt")).unwrap();
+        assert_eq!(content, "hello world");
+    }
+
+    #[tokio::test]
+    async fn edit_file_creates_parent_directories() {
+        let dir = tmp();
+        let args = json!({
+            "path": "deep/nested/dir/file.txt",
+            "old_string": "",
+            "new_string": "content"
+        });
+        let result = exec_edit_file(&args, dir.path()).await;
+        assert!(result.contains("Created"));
+        assert!(dir.path().join("deep/nested/dir/file.txt").exists());
+    }
+
+    #[tokio::test]
+    async fn edit_file_replaces_exact_match() {
+        let dir = tmp();
+        fs::write(dir.path().join("test.txt"), "foo bar baz").unwrap();
+
+        let args = json!({
+            "path": "test.txt",
+            "old_string": "bar",
+            "new_string": "qux"
+        });
+        let result = exec_edit_file(&args, dir.path()).await;
+        assert!(result.contains("Edited"));
+
+        let content = fs::read_to_string(dir.path().join("test.txt")).unwrap();
+        assert_eq!(content, "foo qux baz");
+    }
+
+    #[tokio::test]
+    async fn edit_file_replaces_multiline_match() {
+        let dir = tmp();
+        fs::write(dir.path().join("test.txt"), "line1\nline2\nline3").unwrap();
+
+        let args = json!({
+            "path": "test.txt",
+            "old_string": "line1\nline2",
+            "new_string": "replaced"
+        });
+        let result = exec_edit_file(&args, dir.path()).await;
+        assert!(result.contains("Edited"));
+
+        let content = fs::read_to_string(dir.path().join("test.txt")).unwrap();
+        assert_eq!(content, "replaced\nline3");
+    }
+
+    #[tokio::test]
+    async fn edit_file_errors_when_not_found() {
+        let dir = tmp();
+        fs::write(dir.path().join("test.txt"), "hello world").unwrap();
+
+        let args = json!({
+            "path": "test.txt",
+            "old_string": "nonexistent string",
+            "new_string": "replacement"
+        });
+        let result = exec_edit_file(&args, dir.path()).await;
+        assert!(result.contains("old_string not found"));
+    }
+
+    #[tokio::test]
+    async fn edit_file_errors_on_multiple_matches() {
+        let dir = tmp();
+        fs::write(dir.path().join("test.txt"), "aaa bbb aaa").unwrap();
+
+        let args = json!({
+            "path": "test.txt",
+            "old_string": "aaa",
+            "new_string": "ccc"
+        });
+        let result = exec_edit_file(&args, dir.path()).await;
+        assert!(result.contains("found 2 times"));
+    }
+
+    #[tokio::test]
+    async fn edit_file_missing_path() {
+        let dir = tmp();
+        let args = json!({"old_string": "a", "new_string": "b"});
+        let result = exec_edit_file(&args, dir.path()).await;
+        assert!(result.contains("missing 'path'"));
+    }
+
+    #[tokio::test]
+    async fn edit_file_error_reading_nonexistent() {
+        let dir = tmp();
+        let args = json!({
+            "path": "nope.txt",
+            "old_string": "x",
+            "new_string": "y"
+        });
+        let result = exec_edit_file(&args, dir.path()).await;
+        assert!(result.contains("Error reading"));
+    }
+
+    #[tokio::test]
+    async fn edit_file_reports_bytes_written() {
+        let dir = tmp();
+        fs::write(dir.path().join("test.txt"), "old content").unwrap();
+        let args = json!({
+            "path": "test.txt",
+            "old_string": "old content",
+            "new_string": "new content here"
+        });
+        let result = exec_edit_file(&args, dir.path()).await;
+        assert!(result.contains("bytes written"));
+    }
+
+    // ── grep tests ──
+
+    #[tokio::test]
+    async fn grep_finds_matching_lines() {
+        let dir = tmp();
+        fs::write(dir.path().join("test.rs"), "fn main() {}\nfn helper() {}").unwrap();
+
+        let args = json!({"pattern": "fn main"});
+        let result = exec_grep(&args, dir.path()).await;
+        assert!(result.contains("fn main"));
+    }
+
+    #[tokio::test]
+    async fn grep_case_insensitive() {
+        let dir = tmp();
+        fs::write(dir.path().join("test.txt"), "Hello World\nhello world").unwrap();
+
+        let args = json!({"pattern": "HELLO"});
+        let result = exec_grep(&args, dir.path()).await;
+        // Should find both lines due to -i flag
+        assert!(result.contains("Hello World"));
+        assert!(result.contains("hello world"));
+    }
+
+    #[tokio::test]
+    async fn grep_with_glob_filter() {
+        let dir = tmp();
+        fs::write(dir.path().join("test.rs"), "fn target() {}").unwrap();
+        fs::write(dir.path().join("test.txt"), "fn target() {}").unwrap();
+
+        let args = json!({"pattern": "target", "glob": "*.rs"});
+        let result = exec_grep(&args, dir.path()).await;
+        assert!(result.contains("test.rs"));
+        assert!(!result.contains("test.txt"));
+    }
+
+    #[tokio::test]
+    async fn grep_no_matches() {
+        let dir = tmp();
+        fs::write(dir.path().join("test.txt"), "nothing relevant here").unwrap();
+
+        let args = json!({"pattern": "zzzznonexistent"});
+        let result = exec_grep(&args, dir.path()).await;
+        assert_eq!(result, "No matches found.");
+    }
+
+    #[tokio::test]
+    async fn grep_missing_pattern() {
+        let dir = tmp();
+        let args = json!({});
+        let result = exec_grep(&args, dir.path()).await;
+        assert!(result.contains("missing 'pattern'"));
+    }
+
+    #[tokio::test]
+    async fn grep_in_subdirectory() {
+        let dir = tmp();
+        let sub = dir.path().join("src");
+        fs::create_dir(&sub).unwrap();
+        fs::write(sub.join("lib.rs"), "pub fn search_target() {}").unwrap();
+
+        let args = json!({"pattern": "search_target", "path": "src"});
+        let result = exec_grep(&args, dir.path()).await;
+        assert!(result.contains("search_target"));
+    }
+
+    // ── bash tests ──
+
+    #[tokio::test]
+    async fn bash_runs_simple_command() {
+        let dir = tmp();
+        let args = json!({"command": "echo hello"});
+        let result = exec_bash(&args, dir.path()).await;
+        assert_eq!(result.trim(), "hello");
+    }
+
+    #[tokio::test]
+    async fn bash_captures_stdout_and_stderr() {
+        let dir = tmp();
+        let args = json!({"command": "echo out && echo err >&2"});
+        let result = exec_bash(&args, dir.path()).await;
+        assert!(result.contains("out"));
+        assert!(result.contains("[stderr] err"));
+    }
+
+    #[tokio::test]
+    async fn bash_reports_nonzero_exit_code() {
+        let dir = tmp();
+        let args = json!({"command": "exit 42"});
+        let result = exec_bash(&args, dir.path()).await;
+        assert!(result.contains("[exit code: 42]"));
+    }
+
+    #[tokio::test]
+    async fn bash_uses_workdir() {
+        let dir = tmp();
+        let args = json!({"command": "pwd"});
+        let result = exec_bash(&args, dir.path()).await;
+        assert!(result
+            .trim()
+            .ends_with(dir.path().file_name().unwrap().to_str().unwrap()));
+    }
+
+    #[tokio::test]
+    async fn bash_missing_command() {
+        let dir = tmp();
+        let args = json!({});
+        let result = exec_bash(&args, dir.path()).await;
+        assert!(result.contains("missing 'command'"));
+    }
+
+    #[tokio::test]
+    async fn bash_no_output_returns_placeholder() {
+        let dir = tmp();
+        let args = json!({"command": "true"});
+        let result = exec_bash(&args, dir.path()).await;
+        assert_eq!(result, "(no output)");
+    }
+
+    #[tokio::test]
+    async fn bash_piped_commands() {
+        let dir = tmp();
+        let args = json!({"command": "echo 'abc\ndef\nghi' | grep def"});
+        let result = exec_bash(&args, dir.path()).await;
+        assert_eq!(result.trim(), "def");
+    }
+
+    // ── execute dispatch tests ──
+
+    #[tokio::test]
+    async fn execute_dispatches_read_file() {
+        let dir = tmp();
+        fs::write(dir.path().join("dispatch.txt"), "contents").unwrap();
+
+        let tc = ToolCall {
+            id: "tc_1".into(),
+            kind: "function".into(),
+            function: FunctionCall {
+                name: "read_file".into(),
+                arguments: r#"{"path":"dispatch.txt"}"#.into(),
+            },
+        };
+        let result = execute(&tc, dir.path()).await;
+        assert!(result.contains("contents"));
+    }
+
+    #[tokio::test]
+    async fn execute_dispatches_list_dir() {
+        let dir = tmp();
+        fs::write(dir.path().join("a.txt"), "").unwrap();
+
+        let tc = ToolCall {
+            id: "tc_1".into(),
+            kind: "function".into(),
+            function: FunctionCall {
+                name: "list_dir".into(),
+                arguments: r#"{}"#.into(),
+            },
+        };
+        let result = execute(&tc, dir.path()).await;
+        assert!(result.contains("a.txt"));
+    }
+
+    #[tokio::test]
+    async fn execute_dispatches_edit_file() {
+        let dir = tmp();
+        let tc = ToolCall {
+            id: "tc_1".into(),
+            kind: "function".into(),
+            function: FunctionCall {
+                name: "edit_file".into(),
+                arguments: r#"{"path":"new.txt","old_string":"","new_string":"created"}"#.into(),
+            },
+        };
+        let result = execute(&tc, dir.path()).await;
+        assert!(result.contains("Created"));
+    }
+
+    #[tokio::test]
+    async fn execute_dispatches_bash() {
+        let dir = tmp();
+        let tc = ToolCall {
+            id: "tc_1".into(),
+            kind: "function".into(),
+            function: FunctionCall {
+                name: "bash".into(),
+                arguments: r#"{"command":"echo dispatch_test"}"#.into(),
+            },
+        };
+        let result = execute(&tc, dir.path()).await;
+        assert!(result.contains("dispatch_test"));
+    }
+
+    #[tokio::test]
+    async fn execute_unknown_tool() {
+        let dir = tmp();
+        let tc = ToolCall {
+            id: "tc_1".into(),
+            kind: "function".into(),
+            function: FunctionCall {
+                name: "unknown_tool".into(),
+                arguments: "{}".into(),
+            },
+        };
+        let result = execute(&tc, dir.path()).await;
+        assert!(result.contains("Unknown tool: unknown_tool"));
+    }
+
+    #[tokio::test]
+    async fn execute_handles_invalid_json_arguments() {
+        let dir = tmp();
+        let tc = ToolCall {
+            id: "tc_1".into(),
+            kind: "function".into(),
+            function: FunctionCall {
+                name: "read_file".into(),
+                arguments: "not json".into(),
+            },
+        };
+        let result = execute(&tc, dir.path()).await;
+        assert!(result.contains("Error parsing arguments"));
     }
 }
