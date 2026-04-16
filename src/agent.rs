@@ -182,9 +182,9 @@ mod tests {
     }
 
     #[test]
-    fn agent_new_has_five_tools() {
+    fn agent_new_has_six_tools() {
         let agent = make_agent();
-        assert_eq!(agent.tools.len(), 5);
+        assert_eq!(agent.tools.len(), 6);
     }
 
     #[test]
