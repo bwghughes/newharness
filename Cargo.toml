@@ -1,7 +1,8 @@
 [package]
-name = "harness"
+name = "strap-in"
 version = "0.1.0"
 edition = "2021"
+description = "A fast, minimal coding agent harness for any OpenAI-compatible endpoint"
 
 [dependencies]
 tokio = { version = "1", features = ["full"] }

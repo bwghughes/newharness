@@ -11,13 +11,14 @@ use std::path::PathBuf;
 fn print_banner() {
     eprintln!(
         r#"
- _
-| |__   __ _ _ __ _ __   ___  ___ ___
-| '_ \ / _` | '__| '_ \ / _ \/ __/ __|
-| | | | (_| | |  | | | |  __/\__ \__ \
-|_| |_|\__,_|_|  |_| |_|\___||___/___/
+  _____ _______ _____            _____    _____ _   _
+ / ____|__   __|  __ \     /\   |  __ \  |_   _| \ | |
+| (___    | |  | |__) |   /  \  | |__) |   | | |  \| |
+ \___ \   | |  |  _  /   / /\ \ |  ___/    | | | . ` |
+ ____) |  | |  | | \ \  / ____ \| |       _| |_| |\  |
+|_____/   |_|  |_|  \_\/_/    \_\_|      |_____|_| \_|
 
-  Rust coding harness — OpenAI-compatible
+  Fast coding agent harness — any OpenAI-compatible endpoint
   Type your request, or 'quit' to exit.
   Commands: /compact, /clear
 "#
@@ -25,18 +26,18 @@ fn print_banner() {
 }
 
 fn read_config() -> (String, String, String) {
-    let base_url = std::env::var("HARNESS_API_URL")
+    let base_url = std::env::var("STRAPIN_API_URL")
         .or_else(|_| std::env::var("OPENAI_BASE_URL"))
         .unwrap_or_else(|_| "https://api.openai.com/v1".into());
 
-    let api_key = std::env::var("HARNESS_API_KEY")
+    let api_key = std::env::var("STRAPIN_API_KEY")
         .or_else(|_| std::env::var("OPENAI_API_KEY"))
         .unwrap_or_else(|_| {
-            eprintln!("Warning: No API key set. Set HARNESS_API_KEY or OPENAI_API_KEY.");
+            eprintln!("Warning: No API key set. Set STRAPIN_API_KEY or OPENAI_API_KEY.");
             String::new()
         });
 
-    let model = std::env::var("HARNESS_MODEL").unwrap_or_else(|_| "gpt-4o".into());
+    let model = std::env::var("STRAPIN_MODEL").unwrap_or_else(|_| "gpt-4o".into());
 
     (base_url, api_key, model)
 }
@@ -51,7 +52,7 @@ async fn main() {
     eprintln!("  model:    {model}");
     eprintln!();
 
-    let workdir = std::env::var("HARNESS_WORKDIR")
+    let workdir = std::env::var("STRAPIN_WORKDIR")
         .map(PathBuf::from)
         .unwrap_or_else(|_| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
 
@@ -89,7 +90,7 @@ async fn main() {
             }
             "/clear" => {
                 let (base_url, api_key, model) = read_config();
-                let workdir = std::env::var("HARNESS_WORKDIR")
+                let workdir = std::env::var("STRAPIN_WORKDIR")
                     .map(PathBuf::from)
                     .unwrap_or_else(|_| {
                         std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
