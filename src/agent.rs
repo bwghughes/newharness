@@ -1,4 +1,5 @@
 use crate::client::LlmClient;
+use crate::spinner::{Spinner, Style, ToolProgress};
 use crate::tools;
 use crate::types::*;
 use std::path::{Path, PathBuf};
@@ -91,24 +92,41 @@ impl Agent {
                 break;
             }
 
-            // Execute all tool calls (in parallel via tokio::join_all)
             let tool_calls = assistant_msg.tool_calls.as_ref().unwrap();
-            let futures: Vec<_> = tool_calls
-                .iter()
-                .map(|tc| {
-                    let tc = tc.clone();
-                    let workdir = self.workdir.clone();
-                    tokio::spawn(async move {
-                        let result = tools::execute(&tc, &workdir).await;
-                        (tc.id.clone(), tc.function.name.clone(), result)
-                    })
-                })
-                .collect();
+            let count = tool_calls.len();
 
-            for handle in futures {
-                let (id, name, result) = handle.await?;
-                eprintln!("\x1b[90m[tool: {name}] {} chars\x1b[0m", result.len());
-                self.messages.push(Message::tool_result(&id, &result));
+            if count == 1 {
+                let tc = &tool_calls[0];
+                let spinner = Spinner::start(&tc.function.name, Style::Bounce);
+                let result = tools::execute(tc, &self.workdir).await;
+                spinner.stop().await;
+                eprintln!(
+                    "\x1b[90m  ✓ {} ({} chars)\x1b[0m",
+                    tc.function.name,
+                    result.len()
+                );
+                self.messages.push(Message::tool_result(&tc.id, &result));
+            } else {
+                let mut progress = ToolProgress::new(count);
+                let futures: Vec<_> = tool_calls
+                    .iter()
+                    .map(|tc| {
+                        let tc = tc.clone();
+                        let workdir = self.workdir.clone();
+                        tokio::spawn(async move {
+                            let result = tools::execute(&tc, &workdir).await;
+                            (tc.id.clone(), tc.function.name.clone(), result)
+                        })
+                    })
+                    .collect();
+
+                for handle in futures {
+                    let (id, name, result) = handle.await?;
+                    progress.tick(&name);
+                    self.messages.push(Message::tool_result(&id, &result));
+                }
+                progress.finish();
+                eprintln!("\x1b[90m  ✓ {count} tools completed\x1b[0m");
             }
         }
 

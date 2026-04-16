@@ -1,5 +1,6 @@
 mod agent;
 mod client;
+mod spinner;
 mod tools;
 mod types;
 

@@ -1,3 +1,4 @@
+use crate::spinner::{Spinner, Style};
 use crate::types::*;
 use futures_util::StreamExt;
 use reqwest::Client;
@@ -254,6 +255,9 @@ impl LlmClient {
         let mut stream = resp.bytes_stream();
         let mut line_buf = String::new();
 
+        let mut thinking_spinner = Some(Spinner::start("thinking", Style::Braille));
+        let mut first_output = true;
+
         while let Some(chunk) = stream.next().await {
             let chunk = chunk?;
             let text = String::from_utf8_lossy(&chunk);
@@ -265,13 +269,31 @@ impl LlmClient {
 
                 match assembler.process_sse_line(&line) {
                     SseEvent::ContentToken(ref token) => {
+                        if first_output {
+                            if let Some(s) = thinking_spinner.take() {
+                                s.stop().await;
+                            }
+                            first_output = false;
+                        }
                         let _ = write!(stdout, "{token}");
                         let _ = stdout.flush();
+                    }
+                    SseEvent::ToolCallDelta => {
+                        if first_output {
+                            if let Some(s) = thinking_spinner.take() {
+                                s.stop().await;
+                            }
+                            first_output = false;
+                        }
                     }
                     SseEvent::Done => break,
                     _ => {}
                 }
             }
+        }
+
+        if let Some(s) = thinking_spinner.take() {
+            s.stop().await;
         }
 
         if !assembler.content.is_empty() {
