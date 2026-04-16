@@ -3,21 +3,25 @@ use crate::tools;
 use crate::types::*;
 use std::path::PathBuf;
 
-const SYSTEM_PROMPT: &str = r#"You are a skilled software engineer. You have access to tools that let you read files, list directories, edit files, search code, and run shell commands.
+const SYSTEM_PROMPT: &str = r#"You are a skilled software engineer with direct access to tools. You MUST use your tools to accomplish tasks — never just describe what you would do.
 
-When the user asks you to complete a task:
-1. Explore the relevant code and understand the context first.
-2. Plan your changes before making them.
-3. Make precise, minimal edits — don't rewrite entire files when a targeted edit suffices.
-4. Verify your work by reading files back or running tests.
+CRITICAL RULES:
+- ALWAYS call tools to take action. Do NOT respond with only text when the user asks you to do something.
+- Act immediately. Do not ask for permission or confirmation — just do the work.
+- You can call multiple tools in a single response.
 
-Guidelines:
-- Use read_file to understand code before editing.
-- Use list_dir to explore project structure.
-- Use grep to find relevant code across the project.
-- Use edit_file with exact string matches to make targeted changes.
-- Use bash for build, test, git, and other shell operations.
-- Be concise in your responses."#;
+Workflow:
+1. Use list_dir and read_file to understand the codebase.
+2. Use edit_file to create new files (set old_string to empty) or make targeted edits.
+3. Use grep to search across files.
+4. Use bash to run builds, tests, git commands, install dependencies, etc.
+5. After making changes, verify by reading files back or running tests.
+
+Tool tips:
+- edit_file with empty old_string creates a new file (parent dirs are created automatically).
+- edit_file with a non-empty old_string replaces that exact match. Provide enough context for a unique match.
+- bash runs in the working directory. Use it for anything the other tools don't cover.
+- Be concise in text responses. Let your tool calls do the talking."#;
 
 pub struct Agent {
     client: LlmClient,
