@@ -37,15 +37,31 @@ fn plan_event_to_sse(event: PlanEvent) -> Event {
             id,
             ref status,
             ref activity,
+            started_at,
+            completed_at,
         } => {
             let data = serde_json::json!({
                 "id": id,
                 "status": status,
                 "activity": activity,
+                "started_at": started_at,
+                "completed_at": completed_at,
             });
             Event::default().event("task_update").data(data.to_string())
         }
         PlanEvent::BoardReset => Event::default().event("board_reset").data("{}"),
+        PlanEvent::UsageUpdate {
+            prompt_tokens,
+            completion_tokens,
+        } => {
+            let data = serde_json::json!({
+                "prompt_tokens": prompt_tokens,
+                "completion_tokens": completion_tokens,
+            });
+            Event::default()
+                .event("usage_update")
+                .data(data.to_string())
+        }
     }
 }
 
@@ -56,15 +72,31 @@ fn snapshot_event(tasks: &[crate::plan::PlanTask]) -> Event {
         .data(data.to_string())
 }
 
+fn usage_event(prompt: u64, completion: u64) -> Event {
+    let data = serde_json::json!({
+        "prompt_tokens": prompt,
+        "completion_tokens": completion,
+    });
+    Event::default()
+        .event("usage_update")
+        .data(data.to_string())
+}
+
 async fn sse_handler(
     State(board): State<PlanBoard>,
 ) -> Sse<impl futures_util::Stream<Item = Result<Event, Infallible>>> {
     let (tx, rx) = mpsc::channel::<Result<Event, Infallible>>(32);
     let mut broadcast_rx = board.subscribe();
     let snapshot = board.snapshot().await;
+    let (prompt, completion) = board.usage().await;
 
     tokio::spawn(async move {
         if !snapshot.is_empty() && tx.send(Ok(snapshot_event(&snapshot))).await.is_err() {
+            return;
+        }
+        if (prompt > 0 || completion > 0)
+            && tx.send(Ok(usage_event(prompt, completion))).await.is_err()
+        {
             return;
         }
 
@@ -149,6 +181,8 @@ mod tests {
             id: 0,
             status: TaskStatus::InProgress,
             activity: Some("reading file".into()),
+            started_at: Some(1713360000000),
+            completed_at: None,
         });
         let _ = event;
     }
@@ -169,12 +203,16 @@ mod tests {
                 text: "Read file".into(),
                 status: TaskStatus::Planned,
                 activity: None,
+                started_at: None,
+                completed_at: None,
             },
             PlanTask {
                 id: 1,
                 text: "Edit code".into(),
                 status: TaskStatus::InProgress,
                 activity: Some("working".into()),
+                started_at: Some(1713360000000),
+                completed_at: None,
             },
         ];
         let data = serde_json::json!({ "tasks": tasks });
@@ -570,8 +608,100 @@ mod tests {
             text: "Test".into(),
             status: TaskStatus::Planned,
             activity: None,
+            started_at: None,
+            completed_at: None,
         }];
         let event = snapshot_event(&tasks);
         let _ = event; // construction doesn't panic
+    }
+
+    #[test]
+    fn usage_event_constructs() {
+        let event = usage_event(1000, 500);
+        let _ = event;
+    }
+
+    #[test]
+    fn usage_update_event_constructs() {
+        let event = plan_event_to_sse(PlanEvent::UsageUpdate {
+            prompt_tokens: 1234,
+            completion_tokens: 567,
+        });
+        let _ = event;
+    }
+
+    #[test]
+    fn task_update_json_includes_timestamps() {
+        let data = serde_json::json!({
+            "id": 0usize,
+            "status": TaskStatus::InProgress,
+            "activity": Option::<String>::None,
+            "started_at": Some(1713360000000i64),
+            "completed_at": Option::<i64>::None,
+        });
+        let json: serde_json::Value = serde_json::from_str(&data.to_string()).unwrap();
+        assert_eq!(json["started_at"], 1713360000000i64);
+        assert!(json["completed_at"].is_null());
+    }
+
+    #[test]
+    fn board_html_has_cycle_time_display() {
+        assert!(BOARD_HTML.contains("cycle-time"));
+        assert!(BOARD_HTML.contains("fmtDuration"));
+    }
+
+    #[test]
+    fn board_html_has_usage_display() {
+        assert!(BOARD_HTML.contains("usage_update"));
+        assert!(BOARD_HTML.contains("fmtTokens"));
+        assert!(BOARD_HTML.contains("id=\"usage\""));
+    }
+
+    #[tokio::test]
+    async fn events_relays_usage_update() {
+        let board = PlanBoard::new();
+        let app = router(board.clone());
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/events")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        let body = resp.into_body();
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+
+        board.update_usage(1000, 500).await;
+
+        let result = tokio::time::timeout(std::time::Duration::from_millis(500), async {
+            let mut body = body;
+            let mut buf = Vec::new();
+            while let Some(frame) = body.frame().await {
+                if let Ok(frame) = frame {
+                    if let Some(data) = frame.data_ref() {
+                        buf.extend_from_slice(data);
+                        let text = String::from_utf8_lossy(&buf);
+                        if text.contains("usage_update") {
+                            return text.to_string();
+                        }
+                    }
+                }
+            }
+            String::from_utf8_lossy(&buf).to_string()
+        })
+        .await
+        .expect("timed out waiting for usage_update SSE event");
+
+        let events = parse_sse_events(&result);
+        let usage = events
+            .iter()
+            .find(|(name, _)| name == "usage_update")
+            .expect("expected usage_update event");
+        let data: serde_json::Value = serde_json::from_str(&usage.1).unwrap();
+        assert_eq!(data["prompt_tokens"], 1000);
+        assert_eq!(data["completion_tokens"], 500);
     }
 }

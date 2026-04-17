@@ -110,6 +110,9 @@ impl Agent {
             if let Some(u) = usage {
                 total_prompt += u.prompt_tokens;
                 total_completion += u.completion_tokens;
+                self.board
+                    .update_usage(u.prompt_tokens, u.completion_tokens)
+                    .await;
             }
 
             if !plan_parsed {
