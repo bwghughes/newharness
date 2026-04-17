@@ -1,11 +1,14 @@
 mod agent;
 mod client;
+mod plan;
 mod spinner;
 mod tools;
 mod types;
+mod web;
 
 use agent::Agent;
 use client::LlmClient;
+use plan::PlanBoard;
 use std::io::{self, BufRead, Write};
 use std::path::PathBuf;
 
@@ -352,6 +355,7 @@ async fn main() {
                 println!("  STRAPIN_MODEL                      Model name (default: gpt-4o)");
                 println!("  STRAPIN_WORKDIR                    Working directory");
                 println!("  STRAPIN_SEARCH_API_KEY             Tavily API key for web_search");
+                println!("  STRAPIN_PORT                       Board web UI port (default: 3131)");
                 return;
             }
             other => {
@@ -365,6 +369,25 @@ async fn main() {
     print_banner();
 
     let (base_url, api_key, model) = read_config();
+    let port: u16 = std::env::var("STRAPIN_PORT")
+        .ok()
+        .and_then(|p| p.parse().ok())
+        .unwrap_or(3131);
+
+    let board = PlanBoard::new();
+
+    match tokio::net::TcpListener::bind(format!("0.0.0.0:{port}")).await {
+        Ok(listener) => {
+            eprintln!("  \x1b[2mboard:\x1b[0m    \x1b[33mhttp://localhost:{port}\x1b[0m");
+            let b = board.clone();
+            tokio::spawn(async move { web::serve(b, listener).await });
+        }
+        Err(e) => {
+            eprintln!(
+                "  \x1b[33mwarning:\x1b[0m \x1b[2mcould not start board on port {port}: {e}\x1b[0m"
+            );
+        }
+    }
 
     eprintln!("  \x1b[2mendpoint:\x1b[0m \x1b[33m{base_url}\x1b[0m");
     eprintln!("  \x1b[2mmodel:\x1b[0m    \x1b[33m{model}\x1b[0m");
@@ -375,7 +398,7 @@ async fn main() {
         .unwrap_or_else(|_| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
 
     let client = LlmClient::new(&base_url, &api_key, &model);
-    let mut agent = Agent::new(client, workdir);
+    let mut agent = Agent::new(client, workdir, board.clone());
 
     let stdin = io::stdin();
     let mut stdout = io::stdout();
@@ -414,7 +437,7 @@ async fn main() {
                         std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
                     });
                 let client = LlmClient::new(&base_url, &api_key, &model);
-                agent = Agent::new(client, workdir);
+                agent = Agent::new(client, workdir, board.clone());
                 eprintln!("  \x1b[35m⟳\x1b[0m \x1b[2msession cleared\x1b[0m");
                 continue;
             }

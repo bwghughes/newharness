@@ -1,0 +1,187 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>strap-in | Plan Board</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{
+  background:#0d1117;color:#e6edf3;
+  font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',system-ui,sans-serif;
+  min-height:100vh;
+}
+.header{
+  padding:20px 28px;border-bottom:1px solid #21262d;
+  display:flex;align-items:center;gap:14px;
+}
+.header h1{
+  font-size:18px;font-weight:700;letter-spacing:-0.3px;
+  background:linear-gradient(135deg,#ff1078,#b428ff,#0050ff,#00ffc8);
+  -webkit-background-clip:text;-webkit-text-fill-color:transparent;
+  background-clip:text;
+}
+.status-dot{
+  width:8px;height:8px;border-radius:50%;background:#484f58;
+  flex-shrink:0;
+}
+.status-dot.connected{background:#238636;animation:pulse 2s infinite}
+.status-dot.disconnected{background:#da3633}
+.status-text{font-size:12px;color:#484f58}
+.board{
+  display:flex;gap:16px;padding:20px 28px;
+  min-height:calc(100vh - 70px);
+}
+.column{
+  flex:1;background:#161b22;border-radius:10px;
+  padding:14px;border:1px solid #21262d;
+  display:flex;flex-direction:column;
+}
+.column-header{
+  display:flex;align-items:center;gap:8px;
+  margin-bottom:14px;padding-bottom:10px;
+  border-bottom:1px solid #21262d;
+}
+.column-header h2{
+  font-size:13px;font-weight:600;
+  text-transform:uppercase;letter-spacing:0.5px;
+  color:#8b949e;
+}
+.count{
+  background:#21262d;border-radius:10px;
+  padding:1px 7px;font-size:11px;color:#8b949e;
+}
+.cards{flex:1;display:flex;flex-direction:column;gap:8px}
+.card{
+  background:#0d1117;border:1px solid #21262d;
+  border-radius:8px;padding:10px 14px;
+  border-left:3px solid #484f58;
+  animation:slideIn 0.3s ease;
+}
+.card.in-progress{
+  border-left-color:#58a6ff;
+  box-shadow:0 0 12px rgba(88,166,255,0.08);
+}
+.card.done{
+  border-left-color:#238636;opacity:0.65;
+}
+.task-id{font-size:11px;color:#484f58;margin-bottom:3px;font-weight:600}
+.task-text{font-size:13px;line-height:1.45;color:#c9d1d9}
+.activity{
+  font-size:11px;color:#58a6ff;margin-top:7px;
+  padding-top:7px;border-top:1px solid #21262d;
+  font-family:'SF Mono',SFMono-Regular,Consolas,monospace;
+  word-break:break-all;
+}
+.empty-state{
+  display:flex;align-items:center;justify-content:center;
+  flex:1;color:#30363d;font-size:13px;font-style:italic;
+}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.4}}
+@keyframes slideIn{from{opacity:0;transform:translateY(-8px)}to{opacity:1;transform:translateY(0)}}
+</style>
+</head>
+<body>
+<header class="header">
+  <h1>strap-in</h1>
+  <span class="status-dot" id="status"></span>
+  <span class="status-text" id="status-text">connecting</span>
+</header>
+<div class="board">
+  <div class="column" id="col-planned">
+    <div class="column-header"><h2>Planned</h2><span class="count" id="cnt-planned">0</span></div>
+    <div class="cards" id="cards-planned"></div>
+  </div>
+  <div class="column" id="col-in-progress">
+    <div class="column-header"><h2>In Progress</h2><span class="count" id="cnt-in-progress">0</span></div>
+    <div class="cards" id="cards-in-progress"></div>
+  </div>
+  <div class="column" id="col-done">
+    <div class="column-header"><h2>Done</h2><span class="count" id="cnt-done">0</span></div>
+    <div class="cards" id="cards-done"></div>
+  </div>
+</div>
+<script>
+'use strict';
+const tasks = {};
+const es = new EventSource('/events');
+
+es.addEventListener('plan_created', e => {
+  const data = JSON.parse(e.data);
+  for (const k in tasks) delete tasks[k];
+  for (const t of data.tasks) {
+    tasks[t.id] = {text: t.text, status: t.status, activity: t.activity || null};
+  }
+  render();
+});
+
+es.addEventListener('task_update', e => {
+  const d = JSON.parse(e.data);
+  if (tasks[d.id] !== undefined) {
+    tasks[d.id].status = d.status;
+    tasks[d.id].activity = d.activity || null;
+  }
+  render();
+});
+
+es.addEventListener('board_reset', () => {
+  for (const k in tasks) delete tasks[k];
+  render();
+});
+
+es.onopen = () => {
+  document.getElementById('status').className = 'status-dot connected';
+  document.getElementById('status-text').textContent = 'connected';
+};
+es.onerror = () => {
+  document.getElementById('status').className = 'status-dot disconnected';
+  document.getElementById('status-text').textContent = 'disconnected';
+};
+
+function render() {
+  const cols = {
+    planned: document.getElementById('cards-planned'),
+    in_progress: document.getElementById('cards-in-progress'),
+    done: document.getElementById('cards-done'),
+  };
+  const counts = {planned: 0, in_progress: 0, done: 0};
+
+  for (const c of Object.values(cols)) c.innerHTML = '';
+
+  const sorted = Object.entries(tasks).sort((a, b) => +a[0] - +b[0]);
+  for (const [id, t] of sorted) {
+    const card = document.createElement('div');
+    card.className = 'card ' + t.status.replace('_', '-');
+    card.id = 'task-' + id;
+
+    let h = '<div class="task-id">Step ' + (+id + 1) + '</div>';
+    h += '<div class="task-text">' + esc(t.text) + '</div>';
+    if (t.activity) h += '<div class="activity">' + esc(t.activity) + '</div>';
+    card.innerHTML = h;
+
+    cols[t.status].appendChild(card);
+    counts[t.status]++;
+  }
+
+  document.getElementById('cnt-planned').textContent = counts.planned;
+  document.getElementById('cnt-in-progress').textContent = counts.in_progress;
+  document.getElementById('cnt-done').textContent = counts.done;
+
+  for (const [status, el] of Object.entries(cols)) {
+    const empty = el.parentElement.querySelector('.empty-state');
+    if (counts[status] === 0 && !empty) {
+      const d = document.createElement('div');
+      d.className = 'empty-state';
+      d.textContent = status === 'in_progress' ? 'Waiting' : (status === 'planned' ? 'No plan yet' : 'Nothing completed');
+      el.parentElement.appendChild(d);
+    } else if (counts[status] > 0 && empty) {
+      empty.remove();
+    }
+  }
+}
+
+render();
+function esc(s){const d=document.createElement('div');d.textContent=s;return d.innerHTML}
+</script>
+</body>
+</html>

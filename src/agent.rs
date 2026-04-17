@@ -1,4 +1,5 @@
 use crate::client::LlmClient;
+use crate::plan::{self, PlanBoard};
 use crate::spinner::{self, Spinner, Style, ToolProgress};
 use crate::tools;
 use crate::types::*;
@@ -68,10 +69,11 @@ pub struct Agent {
     tools: Vec<ToolDef>,
     workdir: PathBuf,
     max_turns: usize,
+    board: PlanBoard,
 }
 
 impl Agent {
-    pub fn new(client: LlmClient, workdir: PathBuf) -> Self {
+    pub fn new(client: LlmClient, workdir: PathBuf, board: PlanBoard) -> Self {
         let tools = tools::tool_definitions();
         let prompt = build_system_prompt(&workdir);
 
@@ -87,6 +89,7 @@ impl Agent {
             tools,
             workdir,
             max_turns: 50,
+            board,
         }
     }
 
@@ -94,7 +97,9 @@ impl Agent {
     /// Keeps calling the model until it responds without tool calls.
     pub async fn run_turn(&mut self, user_input: &str) -> Result<(), Box<dyn std::error::Error>> {
         self.messages.push(Message::user(user_input));
+        self.board.reset().await;
 
+        let mut plan_parsed = false;
         let mut total_prompt = 0u64;
         let mut total_completion = 0u64;
 
@@ -107,6 +112,15 @@ impl Agent {
                 total_completion += u.completion_tokens;
             }
 
+            if !plan_parsed {
+                if let Some(ref content) = assistant_msg.content {
+                    if let Some(steps) = plan::parse_plan(content) {
+                        self.board.set_plan(steps).await;
+                        plan_parsed = true;
+                    }
+                }
+            }
+
             let has_tool_calls = assistant_msg.tool_calls.is_some();
             self.messages.push(assistant_msg.clone());
 
@@ -114,12 +128,17 @@ impl Agent {
                 break;
             }
 
+            self.board.advance().await;
+
             let tool_calls = assistant_msg.tool_calls.as_ref().unwrap();
             let count = tool_calls.len();
 
             if count == 1 {
                 let tc = &tool_calls[0];
                 let commentary = tools::describe_call(tc);
+                self.board
+                    .update_activity(&format!("{} {}", tc.function.name, commentary))
+                    .await;
                 let spinner = Spinner::start_tool(&tc.function.name, &commentary, Style::Bounce);
                 let result = tools::execute(tc, &self.workdir).await;
                 spinner.stop().await;
@@ -131,13 +150,17 @@ impl Agent {
                 self.messages.push(Message::tool_result(&tc.id, &result));
             } else {
                 let mut progress = ToolProgress::new(count);
+                let board = self.board.clone();
                 let futures: Vec<_> = tool_calls
                     .iter()
                     .map(|tc| {
                         let tc = tc.clone();
                         let commentary = tools::describe_call(&tc);
                         let workdir = self.workdir.clone();
+                        let b = board.clone();
                         tokio::spawn(async move {
+                            b.update_activity(&format!("{} {}", tc.function.name, commentary))
+                                .await;
                             let result = tools::execute(&tc, &workdir).await;
                             (tc.id.clone(), tc.function.name.clone(), commentary, result)
                         })
@@ -153,6 +176,8 @@ impl Agent {
                 spinner::print_tools_done(count);
             }
         }
+
+        self.board.complete_current().await;
 
         let total = total_prompt + total_completion;
         if total > 0 {
@@ -197,7 +222,8 @@ mod tests {
 
     fn make_agent() -> Agent {
         let client = LlmClient::new("http://localhost:0/v1", "test-key", "test-model");
-        Agent::new(client, PathBuf::from("/tmp"))
+        let board = PlanBoard::new();
+        Agent::new(client, PathBuf::from("/tmp"), board)
     }
 
     // ── Constructor tests ──
@@ -406,7 +432,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("STRAP.md"), "# My rules\nNo dead code.").unwrap();
         let client = LlmClient::new("http://localhost:0/v1", "test-key", "test-model");
-        let agent = Agent::new(client, dir.path().to_path_buf());
+        let agent = Agent::new(client, dir.path().to_path_buf(), PlanBoard::new());
         let system_content = agent.messages()[0].content.as_ref().unwrap();
         assert!(system_content.contains("No dead code."));
     }
