@@ -1196,12 +1196,14 @@ dependencies = [
  "bytes",
  "chrono",
  "futures-util",
+ "http-body-util",
  "reqwest",
  "serde",
  "serde_json",
  "tempfile",
  "tokio",
  "tokio-stream",
+ "tower",
 ]
 
 [[package]]
