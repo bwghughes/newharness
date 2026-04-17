@@ -666,7 +666,14 @@ mod tests {
     #[test]
     fn board_html_ticks_live_timers_without_rerender() {
         assert!(BOARD_HTML.contains("tickLiveTimers"));
-        assert!(BOARD_HTML.contains("setInterval(tickLiveTimers"));
+        assert!(BOARD_HTML.contains(".cycle-time.live"));
+    }
+
+    #[test]
+    fn board_html_render_reuses_existing_cards() {
+        // Diff-based render: look up cards by id and only create if missing.
+        assert!(BOARD_HTML.contains("document.getElementById('task-'"));
+        assert!(BOARD_HTML.contains("cardHtml"));
     }
 
     #[tokio::test]
