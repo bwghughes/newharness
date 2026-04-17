@@ -276,10 +276,40 @@ fn print_banner() {
     write_art(&mode, fancy_underline);
     eprintln!();
     write_tagline(&mode);
+    write_version(&mode);
     write_hints(&mode);
     eprintln!();
     write_separator(&mode);
     eprintln!();
+}
+
+/// Compact version string: "strap-in 0.1.0 (abc1234)".
+/// The git SHA is captured at compile time by build.rs; "-dirty" is appended
+/// when the working tree had uncommitted changes at build time.
+fn version_string() -> String {
+    format!(
+        "{} {} ({})",
+        env!("CARGO_PKG_NAME"),
+        env!("CARGO_PKG_VERSION"),
+        env!("GIT_SHA"),
+    )
+}
+
+fn write_version(mode: &ColorMode) {
+    let mut stderr = io::stderr().lock();
+    let v = version_string();
+    match mode {
+        ColorMode::TrueColor => {
+            let Rgb(r, g, b) = neon_spectrum(0.6).dim(0.5);
+            let _ = writeln!(stderr, "  \x1b[38;2;{r};{g};{b}m{v}\x1b[0m");
+        }
+        ColorMode::Ansi256 => {
+            let _ = writeln!(stderr, "  \x1b[38;5;244m{v}\x1b[0m");
+        }
+        ColorMode::Basic => {
+            let _ = writeln!(stderr, "  \x1b[2m{v}\x1b[0m");
+        }
+    }
 }
 
 fn read_config() -> (String, String, String) {
@@ -301,6 +331,37 @@ fn read_config() -> (String, String, String) {
 
 #[tokio::main]
 async fn main() {
+    if let Some(arg) = std::env::args().nth(1) {
+        match arg.as_str() {
+            "--version" | "-V" | "-v" => {
+                println!("{}", version_string());
+                return;
+            }
+            "--help" | "-h" => {
+                println!("{}", version_string());
+                println!();
+                println!("Usage: strap-in [OPTIONS]");
+                println!();
+                println!("Options:");
+                println!("  -V, --version   Print version information and exit");
+                println!("  -h, --help      Print this help message");
+                println!();
+                println!("Environment:");
+                println!("  STRAPIN_API_URL / OPENAI_BASE_URL  API endpoint");
+                println!("  STRAPIN_API_KEY / OPENAI_API_KEY   API key");
+                println!("  STRAPIN_MODEL                      Model name (default: gpt-4o)");
+                println!("  STRAPIN_WORKDIR                    Working directory");
+                println!("  STRAPIN_SEARCH_API_KEY             Tavily API key for web_search");
+                return;
+            }
+            other => {
+                eprintln!("Unknown argument: {other}");
+                eprintln!("Try --help for usage.");
+                std::process::exit(2);
+            }
+        }
+    }
+
     print_banner();
 
     let (base_url, api_key, model) = read_config();
@@ -366,4 +427,43 @@ async fn main() {
     }
 
     eprintln!("\nBye.");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn version_string_contains_crate_name() {
+        assert!(version_string().starts_with("strap-in "));
+    }
+
+    #[test]
+    fn version_string_contains_cargo_version() {
+        let v = version_string();
+        assert!(
+            v.contains(env!("CARGO_PKG_VERSION")),
+            "expected {v:?} to contain {}",
+            env!("CARGO_PKG_VERSION")
+        );
+    }
+
+    #[test]
+    fn version_string_contains_sha_in_parens() {
+        let v = version_string();
+        assert!(v.contains('('), "missing opening paren in {v:?}");
+        assert!(v.ends_with(')'), "missing closing paren in {v:?}");
+    }
+
+    #[test]
+    fn version_string_is_single_line() {
+        assert!(!version_string().contains('\n'));
+    }
+
+    #[test]
+    fn version_string_sha_is_not_empty() {
+        let v = version_string();
+        let sha = v.rsplit_once('(').unwrap().1.trim_end_matches(')');
+        assert!(!sha.is_empty());
+    }
 }
