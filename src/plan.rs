@@ -179,24 +179,29 @@ pub fn parse_plan(text: &str) -> Option<Vec<String>> {
 
 const TASKS_FILE: &str = "TASKS.md";
 const TASKS_HEADER: &str =
-    "# Tasks completed\n\n<!-- strap-in automatically appends completed tasks here -->\n";
+    "# Tasks\n\n<!-- strap-in automatically appends the plan and completion state here -->\n";
 
-/// Append a timestamped entry for the current board's done tasks to `TASKS.md`
-/// in the given workdir. Creates the file with a header if it doesn't exist.
-/// Does nothing if no tasks are in the Done state.
+/// Append a timestamped entry capturing the full state of the board's plan
+/// to `TASKS.md` in the given workdir. Creates the file with a header if it
+/// doesn't exist. Every task in the plan is recorded with its final status
+/// (`[x]` for done, `[ ]` for still-planned or in-progress). A trailing note
+/// is added when in-progress tasks remain. Skips only when the board has
+/// no tasks at all.
 pub async fn write_history(
     board: &PlanBoard,
     workdir: &Path,
     user_input: &str,
 ) -> std::io::Result<()> {
     let snapshot = board.snapshot().await;
-    let done: Vec<&PlanTask> = snapshot
-        .iter()
-        .filter(|t| t.status == TaskStatus::Done)
-        .collect();
-    if done.is_empty() {
+    if snapshot.is_empty() {
         return Ok(());
     }
+
+    let done_count = snapshot
+        .iter()
+        .filter(|t| t.status == TaskStatus::Done)
+        .count();
+    let total = snapshot.len();
 
     let path = workdir.join(TASKS_FILE);
     let ts = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S UTC");
@@ -205,12 +210,23 @@ pub async fn write_history(
     let mut entry = String::new();
     entry.push_str("\n## ");
     entry.push_str(&ts.to_string());
+    entry.push_str(&format!(" — {done_count}/{total} complete"));
     entry.push_str("\n\n**Request:** ");
     entry.push_str(request_line.trim());
     entry.push_str("\n\n");
-    for task in &done {
-        entry.push_str("- [x] ");
+    for task in &snapshot {
+        let mark = if task.status == TaskStatus::Done {
+            "[x]"
+        } else {
+            "[ ]"
+        };
+        entry.push_str("- ");
+        entry.push_str(mark);
+        entry.push(' ');
         entry.push_str(&task.text);
+        if task.status == TaskStatus::InProgress {
+            entry.push_str(" _(in progress)_");
+        }
         entry.push('\n');
     }
     entry.push_str("\n---\n");
@@ -525,18 +541,19 @@ mod tests {
         let content = tokio::fs::read_to_string(dir.path().join("TASKS.md"))
             .await
             .unwrap();
-        assert!(content.starts_with("# Tasks completed"));
+        assert!(content.starts_with("# Tasks"));
         assert!(content.contains("strap-in automatically appends"));
         assert!(content.contains("**Request:** Make a thing"));
         assert!(content.contains("- [x] First"));
         assert!(content.contains("- [x] Second"));
+        assert!(content.contains("2/2 complete"));
     }
 
     #[tokio::test]
     async fn write_history_appends_to_existing_file() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("TASKS.md");
-        tokio::fs::write(&path, "# Tasks completed\n\nExisting stuff\n")
+        tokio::fs::write(&path, "# Tasks\n\nExisting stuff\n")
             .await
             .unwrap();
 
@@ -555,15 +572,14 @@ mod tests {
         assert!(content.contains("**Request:** New request"));
         assert!(content.contains("- [x] Added"));
         // Header was not duplicated
-        assert_eq!(content.matches("# Tasks completed").count(), 1);
+        assert_eq!(content.matches("# Tasks\n").count(), 1);
     }
 
     #[tokio::test]
-    async fn write_history_skips_when_no_done_tasks() {
+    async fn write_history_skips_only_when_board_is_empty() {
         let dir = tempfile::tempdir().unwrap();
         let board = PlanBoard::new();
-        board.set_plan(vec!["Only planned".into()]).await;
-
+        // Board has no tasks at all — nothing to log
         write_history(&board, dir.path(), "Nothing happened")
             .await
             .unwrap();
@@ -573,8 +589,98 @@ mod tests {
             .unwrap();
         assert!(
             !exists,
-            "TASKS.md should not be created when nothing is done"
+            "TASKS.md should not be created when the board is empty"
         );
+    }
+
+    #[tokio::test]
+    async fn write_history_includes_planned_tasks() {
+        let dir = tempfile::tempdir().unwrap();
+        let board = PlanBoard::new();
+        board
+            .set_plan(vec!["Planned A".into(), "Planned B".into()])
+            .await;
+        // No advance — everything stays Planned
+
+        write_history(&board, dir.path(), "Planning only")
+            .await
+            .unwrap();
+
+        let content = tokio::fs::read_to_string(dir.path().join("TASKS.md"))
+            .await
+            .unwrap();
+        assert!(content.contains("**Request:** Planning only"));
+        assert!(content.contains("- [ ] Planned A"));
+        assert!(content.contains("- [ ] Planned B"));
+        assert!(content.contains("0/2 complete"));
+        assert!(!content.contains("- [x]"));
+    }
+
+    #[tokio::test]
+    async fn write_history_mixes_done_and_planned() {
+        let dir = tempfile::tempdir().unwrap();
+        let board = PlanBoard::new();
+        board
+            .set_plan(vec!["First".into(), "Second".into(), "Third".into()])
+            .await;
+        board.advance().await;
+        board.complete_current().await;
+        // First is Done; Second and Third still Planned
+
+        write_history(&board, dir.path(), "Partial work")
+            .await
+            .unwrap();
+
+        let content = tokio::fs::read_to_string(dir.path().join("TASKS.md"))
+            .await
+            .unwrap();
+        assert!(content.contains("- [x] First"));
+        assert!(content.contains("- [ ] Second"));
+        assert!(content.contains("- [ ] Third"));
+        assert!(content.contains("1/3 complete"));
+    }
+
+    #[tokio::test]
+    async fn write_history_marks_in_progress_with_note() {
+        let dir = tempfile::tempdir().unwrap();
+        let board = PlanBoard::new();
+        board
+            .set_plan(vec!["Running".into(), "Queued".into()])
+            .await;
+        board.advance().await;
+        // Task 0 is now InProgress, task 1 is Planned
+
+        write_history(&board, dir.path(), "Mid-flight")
+            .await
+            .unwrap();
+
+        let content = tokio::fs::read_to_string(dir.path().join("TASKS.md"))
+            .await
+            .unwrap();
+        assert!(content.contains("- [ ] Running _(in progress)_"));
+        assert!(content.contains("- [ ] Queued\n"));
+        assert!(content.contains("0/2 complete"));
+    }
+
+    #[tokio::test]
+    async fn write_history_preserves_task_order() {
+        let dir = tempfile::tempdir().unwrap();
+        let board = PlanBoard::new();
+        board
+            .set_plan(vec!["Alpha".into(), "Bravo".into(), "Charlie".into()])
+            .await;
+
+        write_history(&board, dir.path(), "Ordering test")
+            .await
+            .unwrap();
+
+        let content = tokio::fs::read_to_string(dir.path().join("TASKS.md"))
+            .await
+            .unwrap();
+        let a = content.find("Alpha").unwrap();
+        let b = content.find("Bravo").unwrap();
+        let c = content.find("Charlie").unwrap();
+        assert!(a < b && b < c, "tasks should appear in plan order");
     }
 
     #[tokio::test]
@@ -608,13 +714,13 @@ mod tests {
         let content = tokio::fs::read_to_string(dir.path().join("TASKS.md"))
             .await
             .unwrap();
-        // YYYY-MM-DD HH:MM:SS UTC appears as a section heading
+        // Heading includes "YYYY-MM-DD HH:MM:SS UTC" followed by completion ratio
         let re = content
             .lines()
-            .any(|l| l.starts_with("## ") && l.ends_with(" UTC") && l.len() >= 25);
+            .any(|l| l.starts_with("## ") && l.contains(" UTC") && l.contains("1/1 complete"));
         assert!(
             re,
-            "expected a ## YYYY-MM-DD HH:MM:SS UTC heading, got:\n{content}"
+            "expected a ## <timestamp> UTC — N/M complete heading, got:\n{content}"
         );
     }
 
