@@ -657,6 +657,18 @@ mod tests {
         assert!(BOARD_HTML.contains("id=\"usage\""));
     }
 
+    #[test]
+    fn board_html_has_avg_cycle_time_display() {
+        assert!(BOARD_HTML.contains("id=\"avg-cycle\""));
+        assert!(BOARD_HTML.contains("renderAvgCycle"));
+    }
+
+    #[test]
+    fn board_html_ticks_live_timers_without_rerender() {
+        assert!(BOARD_HTML.contains("tickLiveTimers"));
+        assert!(BOARD_HTML.contains("setInterval(tickLiveTimers"));
+    }
+
     #[tokio::test]
     async fn events_relays_usage_update() {
         let board = PlanBoard::new();
