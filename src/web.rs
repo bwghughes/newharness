@@ -64,9 +64,7 @@ async fn sse_handler(
     let snapshot = board.snapshot().await;
 
     tokio::spawn(async move {
-        if !snapshot.is_empty()
-            && tx.send(Ok(snapshot_event(&snapshot))).await.is_err()
-        {
+        if !snapshot.is_empty() && tx.send(Ok(snapshot_event(&snapshot))).await.is_err() {
             return;
         }
 
@@ -80,9 +78,7 @@ async fn sse_handler(
                 }
                 Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
                     let tasks = board.snapshot().await;
-                    if !tasks.is_empty()
-                        && tx.send(Ok(snapshot_event(&tasks))).await.is_err()
-                    {
+                    if !tasks.is_empty() && tx.send(Ok(snapshot_event(&tasks))).await.is_err() {
                         break;
                     }
                 }
