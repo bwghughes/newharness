@@ -142,6 +142,7 @@ body{
   <span class="status-dot" id="status"></span>
   <span class="status-text" id="status-text">connecting</span>
   <span class="header-spacer"></span>
+  <span class="usage" id="avg-cycle"></span>
   <span class="usage" id="usage"></span>
 </header>
 <div class="board">
@@ -232,6 +233,23 @@ function renderUsage() {
   }
 }
 
+function renderAvgCycle() {
+  const el = document.getElementById('avg-cycle');
+  const done = Object.values(tasks).filter(t => t.started_at && t.completed_at);
+  if (done.length === 0) { el.textContent = ''; return; }
+  const sum = done.reduce((a, t) => a + (t.completed_at - t.started_at), 0);
+  el.textContent = 'avg ' + fmtDuration(Math.round(sum / done.length)) + ' \u00b7 ' + done.length + ' done';
+}
+
+function tickLiveTimers() {
+  const now = Date.now();
+  for (const [id, t] of Object.entries(tasks)) {
+    if (t.status !== 'in_progress' || !t.started_at) continue;
+    const el = document.querySelector('#task-' + id + ' .cycle-time.live');
+    if (el) el.textContent = fmtDuration(now - t.started_at);
+  }
+}
+
 function render() {
   const cols = {
     planned: document.getElementById('cards-planned'),
@@ -267,6 +285,7 @@ function render() {
   document.getElementById('cnt-planned').textContent = counts.planned;
   document.getElementById('cnt-in-progress').textContent = counts.in_progress;
   document.getElementById('cnt-done').textContent = counts.done;
+  renderAvgCycle();
 
   for (const [status, el] of Object.entries(cols)) {
     const empty = el.parentElement.querySelector('.empty-state');
@@ -283,10 +302,8 @@ function render() {
 
 render();
 
-// Live-tick in-progress timers every second
-setInterval(() => {
-  if (Object.values(tasks).some(t => t.status === 'in_progress' && t.started_at)) render();
-}, 1000);
+// Live-tick in-progress timers every second without re-rendering cards
+setInterval(tickLiveTimers, 1000);
 
 function esc(s){const d=document.createElement('div');d.textContent=s;return d.innerHTML}
 
