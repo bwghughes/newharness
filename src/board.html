@@ -57,6 +57,12 @@ body{
 .status-dot.connected{background:var(--accent-done);animation:pulse 2s infinite}
 .status-dot.disconnected{background:#da3633}
 .status-text{font-size:12px;color:var(--muted-soft)}
+.header-spacer{flex:1}
+.usage{
+  font-size:11px;color:var(--muted);
+  font-family:'SF Mono',SFMono-Regular,Consolas,monospace;
+  letter-spacing:-0.2px;
+}
 .board{
   display:flex;gap:16px;padding:20px 28px;
   min-height:calc(100vh - 70px);
@@ -94,7 +100,13 @@ body{
 .card.done{
   border-left-color:var(--accent-done);opacity:0.72;
 }
-.task-id{font-size:11px;color:var(--muted-soft);margin-bottom:3px;font-weight:600;letter-spacing:0.3px}
+.card-top{display:flex;align-items:center;justify-content:space-between;margin-bottom:3px}
+.task-id{font-size:11px;color:var(--muted-soft);font-weight:600;letter-spacing:0.3px}
+.cycle-time{
+  font-size:10px;color:var(--muted);
+  font-family:'SF Mono',SFMono-Regular,Consolas,monospace;
+}
+.cycle-time.live{color:var(--accent-progress)}
 .task-text{font-size:13px;line-height:1.5;color:var(--fg)}
 .task-text strong{font-weight:700;color:var(--fg)}
 .task-text em{font-style:italic}
@@ -129,6 +141,8 @@ body{
   <h1>strap-in</h1>
   <span class="status-dot" id="status"></span>
   <span class="status-text" id="status-text">connecting</span>
+  <span class="header-spacer"></span>
+  <span class="usage" id="usage"></span>
 </header>
 <div class="board">
   <div class="column" id="col-planned">
@@ -147,13 +161,19 @@ body{
 <script>
 'use strict';
 const tasks = {};
+let usage = {prompt: 0, completion: 0};
 const es = new EventSource('/events');
 
 es.addEventListener('plan_created', e => {
   const data = JSON.parse(e.data);
   for (const k in tasks) delete tasks[k];
   for (const t of data.tasks) {
-    tasks[t.id] = {text: t.text, status: t.status, activity: t.activity || null};
+    tasks[t.id] = {
+      text: t.text, status: t.status,
+      activity: t.activity || null,
+      started_at: t.started_at || null,
+      completed_at: t.completed_at || null,
+    };
   }
   render();
 });
@@ -163,6 +183,8 @@ es.addEventListener('task_update', e => {
   if (tasks[d.id] !== undefined) {
     tasks[d.id].status = d.status;
     tasks[d.id].activity = d.activity || null;
+    if (d.started_at != null) tasks[d.id].started_at = d.started_at;
+    if (d.completed_at != null) tasks[d.id].completed_at = d.completed_at;
   }
   render();
 });
@@ -170,6 +192,13 @@ es.addEventListener('task_update', e => {
 es.addEventListener('board_reset', () => {
   for (const k in tasks) delete tasks[k];
   render();
+});
+
+es.addEventListener('usage_update', e => {
+  const d = JSON.parse(e.data);
+  usage.prompt = d.prompt_tokens;
+  usage.completion = d.completion_tokens;
+  renderUsage();
 });
 
 es.onopen = () => {
@@ -180,6 +209,28 @@ es.onerror = () => {
   document.getElementById('status').className = 'status-dot disconnected';
   document.getElementById('status-text').textContent = 'disconnected';
 };
+
+function fmtDuration(ms) {
+  if (ms < 1000) return '<1s';
+  const s = Math.floor(ms / 1000);
+  if (s < 60) return s + 's';
+  const m = Math.floor(s / 60);
+  return m + 'm ' + (s % 60) + 's';
+}
+
+function fmtTokens(n) {
+  if (n >= 1000000) return (n / 1000000).toFixed(1) + 'M';
+  if (n >= 1000) return (n / 1000).toFixed(1) + 'k';
+  return '' + n;
+}
+
+function renderUsage() {
+  const el = document.getElementById('usage');
+  const total = usage.prompt + usage.completion;
+  if (total > 0) {
+    el.textContent = fmtTokens(total) + ' tokens (' + fmtTokens(usage.prompt) + ' in \u00b7 ' + fmtTokens(usage.completion) + ' out)';
+  }
+}
 
 function render() {
   const cols = {
@@ -197,7 +248,14 @@ function render() {
     card.className = 'card ' + t.status.replace('_', '-');
     card.id = 'task-' + id;
 
-    let h = '<div class="task-id">Step ' + (+id + 1) + '</div>';
+    let timeHtml = '';
+    if (t.started_at && t.completed_at) {
+      timeHtml = '<span class="cycle-time">' + fmtDuration(t.completed_at - t.started_at) + '</span>';
+    } else if (t.started_at) {
+      timeHtml = '<span class="cycle-time live">' + fmtDuration(Date.now() - t.started_at) + '</span>';
+    }
+
+    let h = '<div class="card-top"><span class="task-id">Step ' + (+id + 1) + '</span>' + timeHtml + '</div>';
     h += '<div class="task-text">' + md(t.text) + '</div>';
     if (t.activity) h += '<div class="activity">' + md(t.activity) + '</div>';
     card.innerHTML = h;
@@ -225,14 +283,15 @@ function render() {
 
 render();
 
+// Live-tick in-progress timers every second
+setInterval(() => {
+  if (Object.values(tasks).some(t => t.status === 'in_progress' && t.started_at)) render();
+}, 1000);
+
 function esc(s){const d=document.createElement('div');d.textContent=s;return d.innerHTML}
 
-// Tiny inline markdown renderer: escape first, then apply a small
-// set of inline rules. Safe against XSS because replacements only
-// produce whitelisted tags and user content is already escaped.
 function md(text) {
   if (!text) return '';
-  // Protect `code` spans before other rules by swapping in a placeholder.
   const codes = [];
   let html = esc(text).replace(/`([^`]+)`/g, (_, c) => {
     codes.push(c);

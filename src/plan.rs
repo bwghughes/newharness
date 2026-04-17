@@ -19,6 +19,10 @@ pub struct PlanTask {
     pub status: TaskStatus,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub activity: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub started_at: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub completed_at: Option<i64>,
 }
 
 #[derive(Debug, Clone)]
@@ -30,20 +34,32 @@ pub enum PlanEvent {
         id: usize,
         status: TaskStatus,
         activity: Option<String>,
+        started_at: Option<i64>,
+        completed_at: Option<i64>,
     },
     BoardReset,
+    UsageUpdate {
+        prompt_tokens: u64,
+        completion_tokens: u64,
+    },
 }
 
 #[derive(Debug, Default)]
 struct BoardState {
     tasks: Vec<PlanTask>,
     current_step: Option<usize>,
+    prompt_tokens: u64,
+    completion_tokens: u64,
 }
 
 #[derive(Debug, Clone)]
 pub struct PlanBoard {
     state: Arc<RwLock<BoardState>>,
     tx: broadcast::Sender<PlanEvent>,
+}
+
+fn epoch_millis() -> i64 {
+    chrono::Utc::now().timestamp_millis()
 }
 
 impl PlanBoard {
@@ -72,6 +88,8 @@ impl PlanBoard {
                 text,
                 status: TaskStatus::Planned,
                 activity: None,
+                started_at: None,
+                completed_at: None,
             })
             .collect();
 
@@ -83,15 +101,19 @@ impl PlanBoard {
 
     pub async fn advance(&self) {
         let mut state = self.state.write().await;
+        let now = epoch_millis();
 
         if let Some(current) = state.current_step {
             if let Some(task) = state.tasks.get_mut(current) {
                 task.status = TaskStatus::Done;
+                task.completed_at = Some(now);
                 task.activity = None;
                 let _ = self.tx.send(PlanEvent::TaskUpdate {
                     id: current,
                     status: TaskStatus::Done,
                     activity: None,
+                    started_at: task.started_at,
+                    completed_at: task.completed_at,
                 });
             }
         }
@@ -102,11 +124,14 @@ impl PlanBoard {
             .position(|t| t.status == TaskStatus::Planned);
         if let Some(next_id) = next {
             state.tasks[next_id].status = TaskStatus::InProgress;
+            state.tasks[next_id].started_at = Some(now);
             state.current_step = Some(next_id);
             let _ = self.tx.send(PlanEvent::TaskUpdate {
                 id: next_id,
                 status: TaskStatus::InProgress,
                 activity: None,
+                started_at: Some(now),
+                completed_at: None,
             });
         } else {
             state.current_step = None;
@@ -122,6 +147,8 @@ impl PlanBoard {
                     id: current,
                     status: TaskStatus::InProgress,
                     activity: Some(activity.to_string()),
+                    started_at: task.started_at,
+                    completed_at: None,
                 });
             }
         }
@@ -132,15 +159,33 @@ impl PlanBoard {
         if let Some(current) = state.current_step {
             if let Some(task) = state.tasks.get_mut(current) {
                 task.status = TaskStatus::Done;
+                task.completed_at = Some(epoch_millis());
                 task.activity = None;
                 let _ = self.tx.send(PlanEvent::TaskUpdate {
                     id: current,
                     status: TaskStatus::Done,
                     activity: None,
+                    started_at: task.started_at,
+                    completed_at: task.completed_at,
                 });
             }
             state.current_step = None;
         }
+    }
+
+    pub async fn update_usage(&self, prompt: u64, completion: u64) {
+        let mut state = self.state.write().await;
+        state.prompt_tokens += prompt;
+        state.completion_tokens += completion;
+        let _ = self.tx.send(PlanEvent::UsageUpdate {
+            prompt_tokens: state.prompt_tokens,
+            completion_tokens: state.completion_tokens,
+        });
+    }
+
+    pub async fn usage(&self) -> (u64, u64) {
+        let state = self.state.read().await;
+        (state.prompt_tokens, state.completion_tokens)
     }
 
     pub async fn reset(&self) {
@@ -226,6 +271,14 @@ pub async fn write_history(
         entry.push_str(&task.text);
         if task.status == TaskStatus::InProgress {
             entry.push_str(" _(in progress)_");
+        }
+        if let (Some(start), Some(end)) = (task.started_at, task.completed_at) {
+            let secs = (end - start) / 1000;
+            if secs >= 60 {
+                entry.push_str(&format!(" _{}m{}s_", secs / 60, secs % 60));
+            } else {
+                entry.push_str(&format!(" _{secs}s_"));
+            }
         }
         entry.push('\n');
     }
@@ -515,12 +568,16 @@ mod tests {
             text: "Do stuff".into(),
             status: TaskStatus::InProgress,
             activity: Some("reading file".into()),
+            started_at: Some(1713360000000),
+            completed_at: None,
         };
         let json: serde_json::Value = serde_json::to_value(&task).unwrap();
         assert_eq!(json["id"], 0);
         assert_eq!(json["text"], "Do stuff");
         assert_eq!(json["status"], "in_progress");
         assert_eq!(json["activity"], "reading file");
+        assert_eq!(json["started_at"], 1713360000000i64);
+        assert!(json.get("completed_at").is_none());
     }
 
     // ── write_history tests ──
@@ -724,6 +781,82 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn advance_sets_started_at_timestamp() {
+        let board = PlanBoard::new();
+        board.set_plan(vec!["A".into(), "B".into()]).await;
+        board.advance().await;
+        let tasks = board.snapshot().await;
+        assert!(
+            tasks[0].started_at.is_some(),
+            "in-progress task should have started_at"
+        );
+        assert!(tasks[0].completed_at.is_none());
+        assert!(tasks[1].started_at.is_none());
+    }
+
+    #[tokio::test]
+    async fn advance_sets_completed_at_on_done() {
+        let board = PlanBoard::new();
+        board.set_plan(vec!["A".into(), "B".into()]).await;
+        board.advance().await;
+        board.advance().await;
+        let tasks = board.snapshot().await;
+        assert!(tasks[0].started_at.is_some());
+        assert!(tasks[0].completed_at.is_some());
+        assert!(
+            tasks[0].completed_at.unwrap() >= tasks[0].started_at.unwrap(),
+            "completed_at should be >= started_at"
+        );
+        assert!(tasks[1].started_at.is_some());
+        assert!(tasks[1].completed_at.is_none());
+    }
+
+    #[tokio::test]
+    async fn complete_current_sets_completed_at() {
+        let board = PlanBoard::new();
+        board.set_plan(vec!["A".into()]).await;
+        board.advance().await;
+        board.complete_current().await;
+        let tasks = board.snapshot().await;
+        assert!(tasks[0].completed_at.is_some());
+    }
+
+    #[tokio::test]
+    async fn update_usage_accumulates() {
+        let board = PlanBoard::new();
+        board.update_usage(100, 50).await;
+        board.update_usage(200, 75).await;
+        let (prompt, completion) = board.usage().await;
+        assert_eq!(prompt, 300);
+        assert_eq!(completion, 125);
+    }
+
+    #[tokio::test]
+    async fn usage_broadcasts_event() {
+        let board = PlanBoard::new();
+        let mut rx = board.subscribe();
+        board.update_usage(100, 50).await;
+        let event = rx.try_recv().unwrap();
+        assert!(matches!(
+            event,
+            PlanEvent::UsageUpdate {
+                prompt_tokens: 100,
+                completion_tokens: 50,
+            }
+        ));
+    }
+
+    #[tokio::test]
+    async fn reset_preserves_usage() {
+        let board = PlanBoard::new();
+        board.update_usage(500, 200).await;
+        board.reset().await;
+        let (prompt, completion) = board.usage().await;
+        assert_eq!(prompt, 500);
+        assert_eq!(completion, 200);
+    }
+
     #[test]
     fn plan_task_omits_null_activity() {
         let task = PlanTask {
@@ -731,8 +864,12 @@ mod tests {
             text: "X".into(),
             status: TaskStatus::Planned,
             activity: None,
+            started_at: None,
+            completed_at: None,
         };
         let json: serde_json::Value = serde_json::to_value(&task).unwrap();
         assert!(json.get("activity").is_none());
+        assert!(json.get("started_at").is_none());
+        assert!(json.get("completed_at").is_none());
     }
 }
