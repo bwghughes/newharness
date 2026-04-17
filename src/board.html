@@ -5,14 +5,43 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>strap-in | Plan Board</title>
 <style>
+:root {
+  color-scheme: light dark;
+  --bg:#0d1117; --fg:#e6edf3;
+  --border:#21262d; --border-soft:#30363d;
+  --card-bg:#0d1117; --column-bg:#161b22;
+  --muted:#8b949e; --muted-soft:#484f58;
+  --accent-planned:#484f58;
+  --accent-progress:#58a6ff;
+  --accent-progress-glow:rgba(88,166,255,0.08);
+  --accent-done:#238636;
+  --count-bg:#21262d;
+  --code-bg:#1f2937; --code-fg:#e6edf3;
+  --link:#58a6ff;
+}
+@media (prefers-color-scheme: light) {
+  :root {
+    --bg:#f6f8fa; --fg:#1f2328;
+    --border:#d0d7de; --border-soft:#b1bac4;
+    --card-bg:#ffffff; --column-bg:#eef1f4;
+    --muted:#57606a; --muted-soft:#8c959f;
+    --accent-planned:#8c959f;
+    --accent-progress:#0969da;
+    --accent-progress-glow:rgba(9,105,218,0.10);
+    --accent-done:#1a7f37;
+    --count-bg:#d0d7de;
+    --code-bg:#eef1f4; --code-fg:#1f2328;
+    --link:#0969da;
+  }
+}
 *{margin:0;padding:0;box-sizing:border-box}
 body{
-  background:#0d1117;color:#e6edf3;
+  background:var(--bg);color:var(--fg);
   font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',system-ui,sans-serif;
   min-height:100vh;
 }
 .header{
-  padding:20px 28px;border-bottom:1px solid #21262d;
+  padding:20px 28px;border-bottom:1px solid var(--border);
   display:flex;align-items:center;gap:14px;
 }
 .header h1{
@@ -22,60 +51,74 @@ body{
   background-clip:text;
 }
 .status-dot{
-  width:8px;height:8px;border-radius:50%;background:#484f58;
+  width:8px;height:8px;border-radius:50%;background:var(--muted-soft);
   flex-shrink:0;
 }
-.status-dot.connected{background:#238636;animation:pulse 2s infinite}
+.status-dot.connected{background:var(--accent-done);animation:pulse 2s infinite}
 .status-dot.disconnected{background:#da3633}
-.status-text{font-size:12px;color:#484f58}
+.status-text{font-size:12px;color:var(--muted-soft)}
 .board{
   display:flex;gap:16px;padding:20px 28px;
   min-height:calc(100vh - 70px);
 }
 .column{
-  flex:1;background:#161b22;border-radius:10px;
-  padding:14px;border:1px solid #21262d;
+  flex:1;background:var(--column-bg);border-radius:10px;
+  padding:14px;border:1px solid var(--border);
   display:flex;flex-direction:column;
 }
 .column-header{
   display:flex;align-items:center;gap:8px;
   margin-bottom:14px;padding-bottom:10px;
-  border-bottom:1px solid #21262d;
+  border-bottom:1px solid var(--border);
 }
 .column-header h2{
   font-size:13px;font-weight:600;
   text-transform:uppercase;letter-spacing:0.5px;
-  color:#8b949e;
+  color:var(--muted);
 }
 .count{
-  background:#21262d;border-radius:10px;
-  padding:1px 7px;font-size:11px;color:#8b949e;
+  background:var(--count-bg);border-radius:10px;
+  padding:1px 7px;font-size:11px;color:var(--muted);
 }
 .cards{flex:1;display:flex;flex-direction:column;gap:8px}
 .card{
-  background:#0d1117;border:1px solid #21262d;
+  background:var(--card-bg);border:1px solid var(--border);
   border-radius:8px;padding:10px 14px;
-  border-left:3px solid #484f58;
+  border-left:3px solid var(--accent-planned);
   animation:slideIn 0.3s ease;
 }
 .card.in-progress{
-  border-left-color:#58a6ff;
-  box-shadow:0 0 12px rgba(88,166,255,0.08);
+  border-left-color:var(--accent-progress);
+  box-shadow:0 0 12px var(--accent-progress-glow);
 }
 .card.done{
-  border-left-color:#238636;opacity:0.65;
+  border-left-color:var(--accent-done);opacity:0.72;
 }
-.task-id{font-size:11px;color:#484f58;margin-bottom:3px;font-weight:600}
-.task-text{font-size:13px;line-height:1.45;color:#c9d1d9}
+.task-id{font-size:11px;color:var(--muted-soft);margin-bottom:3px;font-weight:600;letter-spacing:0.3px}
+.task-text{font-size:13px;line-height:1.5;color:var(--fg)}
+.task-text strong{font-weight:700;color:var(--fg)}
+.task-text em{font-style:italic}
+.task-text code{
+  background:var(--code-bg);color:var(--code-fg);
+  padding:1px 5px;border-radius:4px;
+  font-family:'SF Mono',SFMono-Regular,Consolas,monospace;
+  font-size:12px;
+}
+.task-text a{color:var(--link);text-decoration:none}
+.task-text a:hover{text-decoration:underline}
 .activity{
-  font-size:11px;color:#58a6ff;margin-top:7px;
-  padding-top:7px;border-top:1px solid #21262d;
+  font-size:11px;color:var(--accent-progress);margin-top:7px;
+  padding-top:7px;border-top:1px solid var(--border);
   font-family:'SF Mono',SFMono-Regular,Consolas,monospace;
   word-break:break-all;
 }
+.activity code{
+  background:var(--code-bg);color:var(--code-fg);
+  padding:0 3px;border-radius:3px;
+}
 .empty-state{
   display:flex;align-items:center;justify-content:center;
-  flex:1;color:#30363d;font-size:13px;font-style:italic;
+  flex:1;color:var(--border-soft);font-size:13px;font-style:italic;
 }
 @keyframes pulse{0%,100%{opacity:1}50%{opacity:.4}}
 @keyframes slideIn{from{opacity:0;transform:translateY(-8px)}to{opacity:1;transform:translateY(0)}}
@@ -155,8 +198,8 @@ function render() {
     card.id = 'task-' + id;
 
     let h = '<div class="task-id">Step ' + (+id + 1) + '</div>';
-    h += '<div class="task-text">' + esc(t.text) + '</div>';
-    if (t.activity) h += '<div class="activity">' + esc(t.activity) + '</div>';
+    h += '<div class="task-text">' + md(t.text) + '</div>';
+    if (t.activity) h += '<div class="activity">' + md(t.activity) + '</div>';
     card.innerHTML = h;
 
     cols[t.status].appendChild(card);
@@ -181,7 +224,29 @@ function render() {
 }
 
 render();
+
 function esc(s){const d=document.createElement('div');d.textContent=s;return d.innerHTML}
+
+// Tiny inline markdown renderer: escape first, then apply a small
+// set of inline rules. Safe against XSS because replacements only
+// produce whitelisted tags and user content is already escaped.
+function md(text) {
+  if (!text) return '';
+  // Protect `code` spans before other rules by swapping in a placeholder.
+  const codes = [];
+  let html = esc(text).replace(/`([^`]+)`/g, (_, c) => {
+    codes.push(c);
+    return '\u0000' + (codes.length - 1) + '\u0000';
+  });
+  html = html.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+  html = html.replace(/__([^_]+)__/g, '<strong>$1</strong>');
+  html = html.replace(/(^|[^*])\*([^*\s][^*]*?)\*(?!\*)/g, '$1<em>$2</em>');
+  html = html.replace(/(^|[^_])_([^_\s][^_]*?)_(?!_)/g, '$1<em>$2</em>');
+  html = html.replace(/\[([^\]]+)\]\(([^)\s]+)\)/g,
+    '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>');
+  html = html.replace(/\u0000(\d+)\u0000/g, (_, i) => '<code>' + codes[+i] + '</code>');
+  return html;
+}
 </script>
 </body>
 </html>

@@ -179,6 +179,10 @@ impl Agent {
 
         self.board.complete_current().await;
 
+        if let Err(e) = plan::write_history(&self.board, &self.workdir, user_input).await {
+            eprintln!("\x1b[2m  warn: could not update TASKS.md: {e}\x1b[0m");
+        }
+
         let total = total_prompt + total_completion;
         if total > 0 {
             spinner::print_usage(total_prompt, total_completion, total);
