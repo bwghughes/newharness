@@ -165,34 +165,42 @@ const tasks = {};
 let usage = {prompt: 0, completion: 0};
 const es = new EventSource('/events');
 
+function safeRender() {
+  try { render(); } catch (err) { console.error('render error:', err); }
+}
+
 es.addEventListener('plan_created', e => {
-  const data = JSON.parse(e.data);
-  for (const k in tasks) delete tasks[k];
-  for (const t of data.tasks) {
-    tasks[t.id] = {
-      text: t.text, status: t.status,
-      activity: t.activity || null,
-      started_at: t.started_at || null,
-      completed_at: t.completed_at || null,
-    };
-  }
-  render();
+  try {
+    const data = JSON.parse(e.data);
+    for (const k in tasks) delete tasks[k];
+    for (const t of data.tasks) {
+      tasks[t.id] = {
+        text: t.text, status: t.status,
+        activity: t.activity || null,
+        started_at: t.started_at || null,
+        completed_at: t.completed_at || null,
+      };
+    }
+  } catch (err) { console.error('plan_created parse error:', err); }
+  safeRender();
 });
 
 es.addEventListener('task_update', e => {
-  const d = JSON.parse(e.data);
-  if (tasks[d.id] !== undefined) {
-    tasks[d.id].status = d.status;
-    tasks[d.id].activity = d.activity || null;
-    if (d.started_at != null) tasks[d.id].started_at = d.started_at;
-    if (d.completed_at != null) tasks[d.id].completed_at = d.completed_at;
-  }
-  render();
+  try {
+    const d = JSON.parse(e.data);
+    if (tasks[d.id] !== undefined) {
+      tasks[d.id].status = d.status;
+      tasks[d.id].activity = d.activity || null;
+      if (d.started_at != null) tasks[d.id].started_at = d.started_at;
+      if (d.completed_at != null) tasks[d.id].completed_at = d.completed_at;
+    }
+  } catch (err) { console.error('task_update parse error:', err); }
+  safeRender();
 });
 
 es.addEventListener('board_reset', () => {
   for (const k in tasks) delete tasks[k];
-  render();
+  safeRender();
 });
 
 es.addEventListener('usage_update', e => {
@@ -250,6 +258,19 @@ function tickLiveTimers() {
   }
 }
 
+function cardHtml(id, t) {
+  let timeHtml = '';
+  if (t.started_at && t.completed_at) {
+    timeHtml = '<span class="cycle-time">' + fmtDuration(t.completed_at - t.started_at) + '</span>';
+  } else if (t.started_at) {
+    timeHtml = '<span class="cycle-time live">' + fmtDuration(Date.now() - t.started_at) + '</span>';
+  }
+  let h = '<div class="card-top"><span class="task-id">Step ' + (+id + 1) + '</span>' + timeHtml + '</div>';
+  h += '<div class="task-text">' + md(t.text) + '</div>';
+  if (t.activity) h += '<div class="activity">' + md(t.activity) + '</div>';
+  return h;
+}
+
 function render() {
   const cols = {
     planned: document.getElementById('cards-planned'),
@@ -257,29 +278,33 @@ function render() {
     done: document.getElementById('cards-done'),
   };
   const counts = {planned: 0, in_progress: 0, done: 0};
-
-  for (const c of Object.values(cols)) c.innerHTML = '';
+  const seen = new Set();
 
   const sorted = Object.entries(tasks).sort((a, b) => +a[0] - +b[0]);
   for (const [id, t] of sorted) {
-    const card = document.createElement('div');
-    card.className = 'card ' + t.status.replace('_', '-');
-    card.id = 'task-' + id;
-
-    let timeHtml = '';
-    if (t.started_at && t.completed_at) {
-      timeHtml = '<span class="cycle-time">' + fmtDuration(t.completed_at - t.started_at) + '</span>';
-    } else if (t.started_at) {
-      timeHtml = '<span class="cycle-time live">' + fmtDuration(Date.now() - t.started_at) + '</span>';
+    seen.add('task-' + id);
+    let card = document.getElementById('task-' + id);
+    const desiredClass = 'card ' + t.status.replace('_', '-');
+    const desiredHtml = cardHtml(id, t);
+    if (!card) {
+      card = document.createElement('div');
+      card.id = 'task-' + id;
+      card.className = desiredClass;
+      card.innerHTML = desiredHtml;
+      cols[t.status].appendChild(card);
+    } else {
+      if (card.className !== desiredClass) card.className = desiredClass;
+      if (card.parentElement !== cols[t.status]) cols[t.status].appendChild(card);
+      if (card.innerHTML !== desiredHtml) card.innerHTML = desiredHtml;
     }
-
-    let h = '<div class="card-top"><span class="task-id">Step ' + (+id + 1) + '</span>' + timeHtml + '</div>';
-    h += '<div class="task-text">' + md(t.text) + '</div>';
-    if (t.activity) h += '<div class="activity">' + md(t.activity) + '</div>';
-    card.innerHTML = h;
-
-    cols[t.status].appendChild(card);
     counts[t.status]++;
+  }
+
+  // Remove cards whose task no longer exists
+  for (const col of Object.values(cols)) {
+    for (const card of Array.from(col.querySelectorAll('.card'))) {
+      if (!seen.has(card.id)) card.remove();
+    }
   }
 
   document.getElementById('cnt-planned').textContent = counts.planned;
@@ -300,10 +325,15 @@ function render() {
   }
 }
 
-render();
+safeRender();
 
-// Live-tick in-progress timers every second without re-rendering cards
-setInterval(tickLiveTimers, 1000);
+// Live-tick in-progress timers every second without re-rendering cards.
+// Also: if the DOM has drifted from state (e.g. an event was lost), re-sync.
+setInterval(() => {
+  tickLiveTimers();
+  const domCount = document.querySelectorAll('.card').length;
+  if (domCount !== Object.keys(tasks).length) safeRender();
+}, 1000);
 
 function esc(s){const d=document.createElement('div');d.textContent=s;return d.innerHTML}
 
