@@ -1,5 +1,7 @@
 use serde::Serialize;
+use std::path::Path;
 use std::sync::Arc;
+use tokio::io::AsyncWriteExt;
 use tokio::sync::{broadcast, RwLock};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -173,6 +175,58 @@ pub fn parse_plan(text: &str) -> Option<Vec<String>> {
     } else {
         None
     }
+}
+
+const TASKS_FILE: &str = "TASKS.md";
+const TASKS_HEADER: &str =
+    "# Tasks completed\n\n<!-- strap-in automatically appends completed tasks here -->\n";
+
+/// Append a timestamped entry for the current board's done tasks to `TASKS.md`
+/// in the given workdir. Creates the file with a header if it doesn't exist.
+/// Does nothing if no tasks are in the Done state.
+pub async fn write_history(
+    board: &PlanBoard,
+    workdir: &Path,
+    user_input: &str,
+) -> std::io::Result<()> {
+    let snapshot = board.snapshot().await;
+    let done: Vec<&PlanTask> = snapshot
+        .iter()
+        .filter(|t| t.status == TaskStatus::Done)
+        .collect();
+    if done.is_empty() {
+        return Ok(());
+    }
+
+    let path = workdir.join(TASKS_FILE);
+    let ts = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S UTC");
+    let request_line = user_input.replace(['\n', '\r'], " ");
+
+    let mut entry = String::new();
+    entry.push_str("\n## ");
+    entry.push_str(&ts.to_string());
+    entry.push_str("\n\n**Request:** ");
+    entry.push_str(request_line.trim());
+    entry.push_str("\n\n");
+    for task in &done {
+        entry.push_str("- [x] ");
+        entry.push_str(&task.text);
+        entry.push('\n');
+    }
+    entry.push_str("\n---\n");
+
+    let file_exists = tokio::fs::try_exists(&path).await.unwrap_or(false);
+    let mut file = tokio::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+        .await?;
+    if !file_exists {
+        file.write_all(TASKS_HEADER.as_bytes()).await?;
+    }
+    file.write_all(entry.as_bytes()).await?;
+    file.flush().await?;
+    Ok(())
 }
 
 fn split_numbered_line(line: &str) -> Option<(&str, &str)> {
@@ -451,6 +505,117 @@ mod tests {
         assert_eq!(json["text"], "Do stuff");
         assert_eq!(json["status"], "in_progress");
         assert_eq!(json["activity"], "reading file");
+    }
+
+    // ── write_history tests ──
+
+    #[tokio::test]
+    async fn write_history_creates_file_with_header_when_missing() {
+        let dir = tempfile::tempdir().unwrap();
+        let board = PlanBoard::new();
+        board.set_plan(vec!["First".into(), "Second".into()]).await;
+        board.advance().await;
+        board.advance().await;
+        board.complete_current().await;
+
+        write_history(&board, dir.path(), "Make a thing")
+            .await
+            .unwrap();
+
+        let content = tokio::fs::read_to_string(dir.path().join("TASKS.md"))
+            .await
+            .unwrap();
+        assert!(content.starts_with("# Tasks completed"));
+        assert!(content.contains("strap-in automatically appends"));
+        assert!(content.contains("**Request:** Make a thing"));
+        assert!(content.contains("- [x] First"));
+        assert!(content.contains("- [x] Second"));
+    }
+
+    #[tokio::test]
+    async fn write_history_appends_to_existing_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("TASKS.md");
+        tokio::fs::write(&path, "# Tasks completed\n\nExisting stuff\n")
+            .await
+            .unwrap();
+
+        let board = PlanBoard::new();
+        board.set_plan(vec!["Added".into(), "Later".into()]).await;
+        board.advance().await;
+        board.advance().await;
+        board.complete_current().await;
+
+        write_history(&board, dir.path(), "New request")
+            .await
+            .unwrap();
+
+        let content = tokio::fs::read_to_string(&path).await.unwrap();
+        assert!(content.contains("Existing stuff"));
+        assert!(content.contains("**Request:** New request"));
+        assert!(content.contains("- [x] Added"));
+        // Header was not duplicated
+        assert_eq!(content.matches("# Tasks completed").count(), 1);
+    }
+
+    #[tokio::test]
+    async fn write_history_skips_when_no_done_tasks() {
+        let dir = tempfile::tempdir().unwrap();
+        let board = PlanBoard::new();
+        board.set_plan(vec!["Only planned".into()]).await;
+
+        write_history(&board, dir.path(), "Nothing happened")
+            .await
+            .unwrap();
+
+        let exists = tokio::fs::try_exists(dir.path().join("TASKS.md"))
+            .await
+            .unwrap();
+        assert!(
+            !exists,
+            "TASKS.md should not be created when nothing is done"
+        );
+    }
+
+    #[tokio::test]
+    async fn write_history_flattens_multiline_request() {
+        let dir = tempfile::tempdir().unwrap();
+        let board = PlanBoard::new();
+        board.set_plan(vec!["Step".into()]).await;
+        board.advance().await;
+        board.complete_current().await;
+
+        write_history(&board, dir.path(), "Line one\nLine two\nLine three")
+            .await
+            .unwrap();
+
+        let content = tokio::fs::read_to_string(dir.path().join("TASKS.md"))
+            .await
+            .unwrap();
+        assert!(content.contains("**Request:** Line one Line two Line three"));
+    }
+
+    #[tokio::test]
+    async fn write_history_contains_utc_timestamp_format() {
+        let dir = tempfile::tempdir().unwrap();
+        let board = PlanBoard::new();
+        board.set_plan(vec!["x".into()]).await;
+        board.advance().await;
+        board.complete_current().await;
+
+        write_history(&board, dir.path(), "r").await.unwrap();
+
+        let content = tokio::fs::read_to_string(dir.path().join("TASKS.md"))
+            .await
+            .unwrap();
+        // YYYY-MM-DD HH:MM:SS UTC appears as a section heading
+        let re = content
+            .lines()
+            .any(|l| l.starts_with("## ") && l.ends_with(" UTC") && l.len() >= 25);
+        assert!(
+            re,
+            "expected a ## YYYY-MM-DD HH:MM:SS UTC heading, got:\n{content}"
+        );
     }
 
     #[test]
