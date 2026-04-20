@@ -1,4 +1,5 @@
 use crate::plan::{PlanBoard, PlanEvent};
+use crate::subagents::{SubagentEvent, SubagentRegistry};
 use axum::{
     extract::State,
     response::{
@@ -13,16 +14,23 @@ use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
 
 const BOARD_HTML: &str = include_str!("board.html");
+const SUBAGENTS_HTML: &str = include_str!("subagents.html");
 
 pub fn router(board: PlanBoard) -> Router {
     Router::new()
         .route("/", get(index))
         .route("/events", get(sse_handler))
+        .route("/subagents", get(subagents_index))
+        .route("/subagent-events", get(subagent_sse_handler))
         .with_state(board)
 }
 
 async fn index() -> Html<&'static str> {
     Html(BOARD_HTML)
+}
+
+async fn subagents_index() -> Html<&'static str> {
+    Html(SUBAGENTS_HTML)
 }
 
 fn plan_event_to_sse(event: PlanEvent) -> Event {
@@ -111,6 +119,64 @@ async fn sse_handler(
                 Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
                     let tasks = board.snapshot().await;
                     if !tasks.is_empty() && tx.send(Ok(snapshot_event(&tasks))).await.is_err() {
+                        break;
+                    }
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+            }
+        }
+    });
+
+    Sse::new(ReceiverStream::new(rx))
+        .keep_alive(KeepAlive::new().interval(std::time::Duration::from_secs(15)))
+}
+
+fn subagent_event_to_sse(event: SubagentEvent) -> Event {
+    match event {
+        SubagentEvent::Created(a) => {
+            let data = serde_json::to_string(&a).unwrap_or_else(|_| "{}".into());
+            Event::default().event("created").data(data)
+        }
+        SubagentEvent::Updated(a) => {
+            let data = serde_json::to_string(&a).unwrap_or_else(|_| "{}".into());
+            Event::default().event("updated").data(data)
+        }
+    }
+}
+
+async fn subagent_sse_handler(
+) -> Sse<impl futures_util::Stream<Item = Result<Event, Infallible>>> {
+    let registry: SubagentRegistry = crate::subagents::registry().clone();
+    let (tx, rx) = mpsc::channel::<Result<Event, Infallible>>(32);
+    let mut broadcast_rx = registry.subscribe();
+    let snapshot = registry.snapshot().await;
+
+    tokio::spawn(async move {
+        let data = serde_json::json!({ "agents": snapshot }).to_string();
+        if tx
+            .send(Ok(Event::default().event("snapshot").data(data)))
+            .await
+            .is_err()
+        {
+            return;
+        }
+
+        loop {
+            match broadcast_rx.recv().await {
+                Ok(event) => {
+                    let sse = subagent_event_to_sse(event);
+                    if tx.send(Ok(sse)).await.is_err() {
+                        break;
+                    }
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
+                    let snap = registry.snapshot().await;
+                    let data = serde_json::json!({ "agents": snap }).to_string();
+                    if tx
+                        .send(Ok(Event::default().event("snapshot").data(data)))
+                        .await
+                        .is_err()
+                    {
                         break;
                     }
                 }
@@ -674,6 +740,54 @@ mod tests {
         // Diff-based render: look up cards by id and only create if missing.
         assert!(BOARD_HTML.contains("document.getElementById('task-'"));
         assert!(BOARD_HTML.contains("cardHtml"));
+    }
+
+    #[tokio::test]
+    async fn subagents_index_returns_200_with_html() {
+        let app = router(PlanBoard::new());
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/subagents")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = resp.into_body().collect().await.unwrap().to_bytes();
+        let text = String::from_utf8_lossy(&body);
+        assert!(text.contains("<!DOCTYPE html>"));
+        assert!(text.contains("Sub-agents"));
+    }
+
+    #[tokio::test]
+    async fn subagent_events_returns_sse_content_type() {
+        let app = router(PlanBoard::new());
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/subagent-events")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let ct = resp
+            .headers()
+            .get("content-type")
+            .unwrap()
+            .to_str()
+            .unwrap();
+        assert!(ct.contains("text/event-stream"));
+    }
+
+    #[test]
+    fn subagents_html_embedded() {
+        assert!(SUBAGENTS_HTML.contains("<!DOCTYPE html>"));
+        assert!(SUBAGENTS_HTML.contains("EventSource"));
+        assert!(SUBAGENTS_HTML.contains("/subagent-events"));
     }
 
     #[tokio::test]

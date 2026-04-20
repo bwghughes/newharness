@@ -204,7 +204,7 @@ impl LlmClient {
         &self,
         messages: &[Message],
         tools: &[ToolDef],
-    ) -> Result<(Message, Option<Usage>), Box<dyn std::error::Error>> {
+    ) -> Result<(Message, Option<Usage>), Box<dyn std::error::Error + Send + Sync>> {
         let url = format!("{}/chat/completions", self.base_url);
 
         let (tools_param, tool_choice) = if tools.is_empty() {
@@ -257,7 +257,6 @@ impl LlmClient {
         }
 
         let mut assembler = StreamAssembler::new();
-        let mut stdout = io::stdout().lock();
         let mut stream = resp.bytes_stream();
         let mut line_buf = String::new();
 
@@ -281,8 +280,9 @@ impl LlmClient {
                             }
                             first_output = false;
                         }
-                        let _ = write!(stdout, "{token}");
-                        let _ = stdout.flush();
+                        let mut out = io::stdout().lock();
+                        let _ = write!(out, "{token}");
+                        let _ = out.flush();
                     }
                     SseEvent::ToolCallDelta if first_output => {
                         if let Some(s) = thinking_spinner.take() {
@@ -301,7 +301,7 @@ impl LlmClient {
         }
 
         if !assembler.content.is_empty() {
-            let _ = writeln!(stdout);
+            let _ = writeln!(io::stdout().lock());
         }
 
         let verbose = std::env::var("STRAPIN_VERBOSE").is_ok();

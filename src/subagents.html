@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>strap-in | Plan Board</title>
+<title>strap-in | Sub-agents</title>
 <style>
 :root {
   color-scheme: light dark;
@@ -11,10 +11,10 @@
   --border:#21262d; --border-soft:#30363d;
   --card-bg:#0d1117; --column-bg:#161b22;
   --muted:#8b949e; --muted-soft:#484f58;
-  --accent-planned:#484f58;
-  --accent-progress:#58a6ff;
-  --accent-progress-glow:rgba(88,166,255,0.08);
+  --accent-running:#58a6ff;
+  --accent-running-glow:rgba(88,166,255,0.08);
   --accent-done:#238636;
+  --accent-failed:#da3633;
   --count-bg:#21262d;
   --code-bg:#1f2937; --code-fg:#e6edf3;
   --link:#58a6ff;
@@ -25,10 +25,10 @@
     --border:#d0d7de; --border-soft:#b1bac4;
     --card-bg:#ffffff; --column-bg:#eef1f4;
     --muted:#57606a; --muted-soft:#8c959f;
-    --accent-planned:#8c959f;
-    --accent-progress:#0969da;
-    --accent-progress-glow:rgba(9,105,218,0.10);
+    --accent-running:#0969da;
+    --accent-running-glow:rgba(9,105,218,0.10);
     --accent-done:#1a7f37;
+    --accent-failed:#cf222e;
     --count-bg:#d0d7de;
     --code-bg:#eef1f4; --code-fg:#1f2328;
     --link:#0969da;
@@ -94,23 +94,25 @@ body{
 .card{
   background:var(--card-bg);border:1px solid var(--border);
   border-radius:8px;padding:10px 14px;
-  border-left:3px solid var(--accent-planned);
+  border-left:3px solid var(--muted-soft);
   animation:slideIn 0.3s ease;
 }
-.card.in-progress{
-  border-left-color:var(--accent-progress);
-  box-shadow:0 0 12px var(--accent-progress-glow);
+.card.running{
+  border-left-color:var(--accent-running);
+  box-shadow:0 0 12px var(--accent-running-glow);
 }
-.card.done{
-  border-left-color:var(--accent-done);opacity:0.72;
+.card.completed{border-left-color:var(--accent-done);opacity:0.85}
+.card.failed{border-left-color:var(--accent-failed);opacity:0.9}
+.card-top{display:flex;align-items:center;justify-content:space-between;margin-bottom:4px;gap:10px}
+.agent-id{
+  font-size:11px;color:var(--muted-soft);font-weight:600;letter-spacing:0.3px;
+  font-family:'SF Mono',SFMono-Regular,Consolas,monospace;
 }
-.card-top{display:flex;align-items:center;justify-content:space-between;margin-bottom:3px}
-.task-id{font-size:11px;color:var(--muted-soft);font-weight:600;letter-spacing:0.3px}
 .cycle-time{
   font-size:10px;color:var(--muted);
   font-family:'SF Mono',SFMono-Regular,Consolas,monospace;
 }
-.cycle-time.live{color:var(--accent-progress)}
+.cycle-time.live{color:var(--accent-running)}
 .task-text{font-size:13px;line-height:1.5;color:var(--fg)}
 .task-text strong{font-weight:700;color:var(--fg)}
 .task-text em{font-style:italic}
@@ -120,17 +122,20 @@ body{
   font-family:'SF Mono',SFMono-Regular,Consolas,monospace;
   font-size:12px;
 }
-.task-text a{color:var(--link);text-decoration:none}
-.task-text a:hover{text-decoration:underline}
+.meta{
+  display:flex;gap:12px;margin-top:7px;padding-top:7px;
+  border-top:1px solid var(--border);
+  font-size:11px;color:var(--muted);
+  font-family:'SF Mono',SFMono-Regular,Consolas,monospace;
+}
+.meta .tokens{color:var(--accent-running)}
+.card.completed .meta .tokens{color:var(--accent-done)}
+.card.failed .meta .tokens{color:var(--accent-failed)}
 .activity{
-  font-size:11px;color:var(--accent-progress);margin-top:7px;
+  font-size:11px;color:var(--accent-running);margin-top:7px;
   padding-top:7px;border-top:1px solid var(--border);
   font-family:'SF Mono',SFMono-Regular,Consolas,monospace;
   word-break:break-all;
-}
-.activity code{
-  background:var(--code-bg);color:var(--code-fg);
-  padding:0 3px;border-radius:3px;
 }
 .empty-state{
   display:flex;align-items:center;justify-content:center;
@@ -144,78 +149,58 @@ body{
 <header class="header">
   <h1>strap-in</h1>
   <nav>
-    <a href="/" class="active">Plan</a>
-    <a href="/subagents">Sub-agents</a>
+    <a href="/">Plan</a>
+    <a href="/subagents" class="active">Sub-agents</a>
   </nav>
   <span class="status-dot" id="status"></span>
   <span class="status-text" id="status-text">connecting</span>
   <span class="header-spacer"></span>
-  <span class="usage" id="avg-cycle"></span>
-  <span class="usage" id="usage"></span>
+  <span class="usage" id="totals"></span>
 </header>
 <div class="board">
-  <div class="column" id="col-planned">
-    <div class="column-header"><h2>Planned</h2><span class="count" id="cnt-planned">0</span></div>
-    <div class="cards" id="cards-planned"></div>
+  <div class="column">
+    <div class="column-header"><h2>Running</h2><span class="count" id="cnt-running">0</span></div>
+    <div class="cards" id="cards-running"></div>
   </div>
-  <div class="column" id="col-in-progress">
-    <div class="column-header"><h2>In Progress</h2><span class="count" id="cnt-in-progress">0</span></div>
-    <div class="cards" id="cards-in-progress"></div>
+  <div class="column">
+    <div class="column-header"><h2>Completed</h2><span class="count" id="cnt-completed">0</span></div>
+    <div class="cards" id="cards-completed"></div>
   </div>
-  <div class="column" id="col-done">
-    <div class="column-header"><h2>Done</h2><span class="count" id="cnt-done">0</span></div>
-    <div class="cards" id="cards-done"></div>
+  <div class="column">
+    <div class="column-header"><h2>Failed</h2><span class="count" id="cnt-failed">0</span></div>
+    <div class="cards" id="cards-failed"></div>
   </div>
 </div>
 <script>
 'use strict';
-const tasks = {};
-let usage = {prompt: 0, completion: 0};
-const es = new EventSource('/events');
+const agents = {};
+const es = new EventSource('/subagent-events');
 
 function safeRender() {
   try { render(); } catch (err) { console.error('render error:', err); }
 }
 
-es.addEventListener('plan_created', e => {
+function upsert(a) {
+  agents[a.id] = a;
+}
+
+es.addEventListener('snapshot', e => {
   try {
     const data = JSON.parse(e.data);
-    for (const k in tasks) delete tasks[k];
-    for (const t of data.tasks) {
-      tasks[t.id] = {
-        text: t.text, status: t.status,
-        activity: t.activity || null,
-        started_at: t.started_at || null,
-        completed_at: t.completed_at || null,
-      };
-    }
-  } catch (err) { console.error('plan_created parse error:', err); }
+    for (const k in agents) delete agents[k];
+    for (const a of data.agents) upsert(a);
+  } catch (err) { console.error('snapshot parse error:', err); }
   safeRender();
 });
 
-es.addEventListener('task_update', e => {
-  try {
-    const d = JSON.parse(e.data);
-    if (tasks[d.id] !== undefined) {
-      tasks[d.id].status = d.status;
-      tasks[d.id].activity = d.activity || null;
-      if (d.started_at != null) tasks[d.id].started_at = d.started_at;
-      if (d.completed_at != null) tasks[d.id].completed_at = d.completed_at;
-    }
-  } catch (err) { console.error('task_update parse error:', err); }
+es.addEventListener('created', e => {
+  try { upsert(JSON.parse(e.data)); } catch (err) {}
   safeRender();
 });
 
-es.addEventListener('board_reset', () => {
-  for (const k in tasks) delete tasks[k];
+es.addEventListener('updated', e => {
+  try { upsert(JSON.parse(e.data)); } catch (err) {}
   safeRender();
-});
-
-es.addEventListener('usage_update', e => {
-  const d = JSON.parse(e.data);
-  usage.prompt = d.prompt_tokens;
-  usage.completion = d.completion_tokens;
-  renderUsage();
 });
 
 es.onopen = () => {
@@ -241,91 +226,90 @@ function fmtTokens(n) {
   return '' + n;
 }
 
-function renderUsage() {
-  const el = document.getElementById('usage');
-  const total = usage.prompt + usage.completion;
-  if (total > 0) {
-    el.textContent = fmtTokens(total) + ' tokens (' + fmtTokens(usage.prompt) + ' in \u00b7 ' + fmtTokens(usage.completion) + ' out)';
-  }
-}
-
-function renderAvgCycle() {
-  const el = document.getElementById('avg-cycle');
-  const done = Object.values(tasks).filter(t => t.started_at && t.completed_at);
-  if (done.length === 0) { el.textContent = ''; return; }
-  const sum = done.reduce((a, t) => a + (t.completed_at - t.started_at), 0);
-  el.textContent = 'avg ' + fmtDuration(Math.round(sum / done.length)) + ' \u00b7 ' + done.length + ' done';
-}
-
 function tickLiveTimers() {
   const now = Date.now();
-  for (const [id, t] of Object.entries(tasks)) {
-    if (t.status !== 'in_progress' || !t.started_at) continue;
-    const el = document.querySelector('#task-' + id + ' .cycle-time.live');
-    if (el) el.textContent = fmtDuration(now - t.started_at);
+  for (const a of Object.values(agents)) {
+    if (a.status !== 'running' || !a.started_at) continue;
+    const el = document.querySelector('#agent-' + a.id + ' .cycle-time.live');
+    if (el) el.textContent = fmtDuration(now - a.started_at);
   }
 }
 
-function cardHtml(id, t) {
-  let timeHtml = '';
-  if (t.started_at && t.completed_at) {
-    timeHtml = '<span class="cycle-time">' + fmtDuration(t.completed_at - t.started_at) + '</span>';
-  } else if (t.started_at) {
-    timeHtml = '<span class="cycle-time live">' + fmtDuration(Date.now() - t.started_at) + '</span>';
+function renderTotals() {
+  const all = Object.values(agents);
+  const totalP = all.reduce((s, a) => s + (a.prompt_tokens || 0), 0);
+  const totalC = all.reduce((s, a) => s + (a.completion_tokens || 0), 0);
+  const el = document.getElementById('totals');
+  if (totalP + totalC > 0) {
+    el.textContent = fmtTokens(totalP + totalC) + ' tokens across ' + all.length + ' agent' + (all.length === 1 ? '' : 's');
+  } else {
+    el.textContent = all.length ? all.length + ' agent' + (all.length === 1 ? '' : 's') : '';
   }
-  let h = '<div class="card-top"><span class="task-id">Step ' + (+id + 1) + '</span>' + timeHtml + '</div>';
-  h += '<div class="task-text">' + md(t.text) + '</div>';
-  if (t.activity) h += '<div class="activity">' + md(t.activity) + '</div>';
+}
+
+function cardHtml(a) {
+  let timeHtml = '';
+  if (a.started_at && a.completed_at) {
+    timeHtml = '<span class="cycle-time">' + fmtDuration(a.completed_at - a.started_at) + '</span>';
+  } else if (a.started_at) {
+    timeHtml = '<span class="cycle-time live">' + fmtDuration(Date.now() - a.started_at) + '</span>';
+  }
+  let h = '<div class="card-top"><span class="agent-id">' + esc(a.id) + '</span>' + timeHtml + '</div>';
+  h += '<div class="task-text">' + md(a.task) + '</div>';
+  if (a.activity) h += '<div class="activity">' + md(a.activity) + '</div>';
+  const tokens = (a.prompt_tokens || 0) + (a.completion_tokens || 0);
+  h += '<div class="meta"><span class="tokens">' + fmtTokens(tokens) + ' tok</span>';
+  h += '<span>in ' + fmtTokens(a.prompt_tokens || 0) + ' \u00b7 out ' + fmtTokens(a.completion_tokens || 0) + '</span>';
+  h += '</div>';
   return h;
 }
 
 function render() {
   const cols = {
-    planned: document.getElementById('cards-planned'),
-    in_progress: document.getElementById('cards-in-progress'),
-    done: document.getElementById('cards-done'),
+    running: document.getElementById('cards-running'),
+    completed: document.getElementById('cards-completed'),
+    failed: document.getElementById('cards-failed'),
   };
-  const counts = {planned: 0, in_progress: 0, done: 0};
+  const counts = {running: 0, completed: 0, failed: 0};
   const seen = new Set();
 
-  const sorted = Object.entries(tasks).sort((a, b) => +a[0] - +b[0]);
-  for (const [id, t] of sorted) {
-    seen.add('task-' + id);
-    let card = document.getElementById('task-' + id);
-    const desiredClass = 'card ' + t.status.replace('_', '-');
-    const desiredHtml = cardHtml(id, t);
+  const sorted = Object.values(agents).sort((a, b) => (a.started_at || 0) - (b.started_at || 0));
+  for (const a of sorted) {
+    seen.add('agent-' + a.id);
+    let card = document.getElementById('agent-' + a.id);
+    const desiredClass = 'card ' + a.status;
+    const desiredHtml = cardHtml(a);
     if (!card) {
       card = document.createElement('div');
-      card.id = 'task-' + id;
+      card.id = 'agent-' + a.id;
       card.className = desiredClass;
       card.innerHTML = desiredHtml;
-      cols[t.status].appendChild(card);
+      cols[a.status].appendChild(card);
     } else {
       if (card.className !== desiredClass) card.className = desiredClass;
-      if (card.parentElement !== cols[t.status]) cols[t.status].appendChild(card);
+      if (card.parentElement !== cols[a.status]) cols[a.status].appendChild(card);
       if (card.innerHTML !== desiredHtml) card.innerHTML = desiredHtml;
     }
-    counts[t.status]++;
+    counts[a.status]++;
   }
 
-  // Remove cards whose task no longer exists
   for (const col of Object.values(cols)) {
     for (const card of Array.from(col.querySelectorAll('.card'))) {
       if (!seen.has(card.id)) card.remove();
     }
   }
 
-  document.getElementById('cnt-planned').textContent = counts.planned;
-  document.getElementById('cnt-in-progress').textContent = counts.in_progress;
-  document.getElementById('cnt-done').textContent = counts.done;
-  renderAvgCycle();
+  document.getElementById('cnt-running').textContent = counts.running;
+  document.getElementById('cnt-completed').textContent = counts.completed;
+  document.getElementById('cnt-failed').textContent = counts.failed;
+  renderTotals();
 
   for (const [status, el] of Object.entries(cols)) {
     const empty = el.parentElement.querySelector('.empty-state');
     if (counts[status] === 0 && !empty) {
       const d = document.createElement('div');
       d.className = 'empty-state';
-      d.textContent = status === 'in_progress' ? 'Waiting' : (status === 'planned' ? 'No plan yet' : 'Nothing completed');
+      d.textContent = status === 'running' ? 'No sub-agents running' : (status === 'completed' ? 'Nothing completed' : 'None failed');
       el.parentElement.appendChild(d);
     } else if (counts[status] > 0 && empty) {
       empty.remove();
@@ -334,13 +318,8 @@ function render() {
 }
 
 safeRender();
-
-// Live-tick in-progress timers every second without re-rendering cards.
-// Also: if the DOM has drifted from state (e.g. an event was lost), re-sync.
 setInterval(() => {
   tickLiveTimers();
-  const domCount = document.querySelectorAll('.card').length;
-  if (domCount !== Object.keys(tasks).length) safeRender();
 }, 1000);
 
 function esc(s){const d=document.createElement('div');d.textContent=s;return d.innerHTML}

@@ -95,7 +95,10 @@ impl Agent {
 
     /// Run one user turn through the agent loop.
     /// Keeps calling the model until it responds without tool calls.
-    pub async fn run_turn(&mut self, user_input: &str) -> Result<(), Box<dyn std::error::Error>> {
+    pub async fn run_turn(
+        &mut self,
+        user_input: &str,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         self.messages.push(Message::user(user_input));
         self.board.reset().await;
 
@@ -154,24 +157,21 @@ impl Agent {
             } else {
                 let mut progress = ToolProgress::new(count);
                 let board = self.board.clone();
-                let futures: Vec<_> = tool_calls
-                    .iter()
-                    .map(|tc| {
-                        let tc = tc.clone();
-                        let commentary = tools::describe_call(&tc);
-                        let workdir = self.workdir.clone();
-                        let b = board.clone();
-                        tokio::spawn(async move {
-                            b.update_activity(&format!("{} {}", tc.function.name, commentary))
-                                .await;
-                            let result = tools::execute(&tc, &workdir).await;
-                            (tc.id.clone(), tc.function.name.clone(), commentary, result)
-                        })
-                    })
-                    .collect();
+                let futures = tool_calls.iter().map(|tc| {
+                    let tc = tc.clone();
+                    let commentary = tools::describe_call(&tc);
+                    let workdir = self.workdir.clone();
+                    let b = board.clone();
+                    async move {
+                        b.update_activity(&format!("{} {}", tc.function.name, commentary))
+                            .await;
+                        let result = tools::execute(&tc, &workdir).await;
+                        (tc.id.clone(), tc.function.name.clone(), commentary, result)
+                    }
+                });
 
-                for handle in futures {
-                    let (id, name, commentary, result) = handle.await?;
+                let results = futures_util::future::join_all(futures).await;
+                for (id, name, commentary, result) in results {
                     progress.tick(&name, &commentary);
                     self.messages.push(Message::tool_result(&id, &result));
                 }
@@ -192,6 +192,15 @@ impl Agent {
         }
 
         Ok(())
+    }
+
+    /// Text of the most recent assistant message, if any.
+    pub fn last_assistant_text(&self) -> Option<String> {
+        self.messages
+            .iter()
+            .rev()
+            .find(|m| m.role == "assistant")
+            .and_then(|m| m.content.clone())
     }
 
     /// Compact old messages to stay within context limits.
@@ -248,9 +257,9 @@ mod tests {
     }
 
     #[test]
-    fn agent_new_has_six_tools() {
+    fn agent_new_has_seven_tools() {
         let agent = make_agent();
-        assert_eq!(agent.tools.len(), 6);
+        assert_eq!(agent.tools.len(), 7);
     }
 
     #[test]

@@ -2,6 +2,7 @@ mod agent;
 mod client;
 mod plan;
 mod spinner;
+mod subagents;
 mod tools;
 mod types;
 mod web;
@@ -243,7 +244,7 @@ fn write_hints(mode: &ColorMode) {
             );
             let _ = writeln!(
                 stderr,
-                "  \x1b[2mCommands: \x1b[0m\x1b[38;2;{cr};{cg};{cb}m/compact\x1b[0m\x1b[2m, \x1b[0m\x1b[38;2;{cr};{cg};{cb}m/clear\x1b[0m"
+                "  \x1b[2mCommands: \x1b[0m\x1b[38;2;{cr};{cg};{cb}m/compact\x1b[0m\x1b[2m, \x1b[0m\x1b[38;2;{cr};{cg};{cb}m/clear\x1b[0m\x1b[2m, \x1b[0m\x1b[38;2;{cr};{cg};{cb}m/wip\x1b[0m"
             );
         }
         ColorMode::Ansi256 => {
@@ -253,7 +254,7 @@ fn write_hints(mode: &ColorMode) {
             );
             let _ = writeln!(
                 stderr,
-                "  \x1b[2mCommands: \x1b[0m\x1b[38;5;44m/compact\x1b[0m\x1b[2m, \x1b[0m\x1b[38;5;44m/clear\x1b[0m"
+                "  \x1b[2mCommands: \x1b[0m\x1b[38;5;44m/compact\x1b[0m\x1b[2m, \x1b[0m\x1b[38;5;44m/clear\x1b[0m\x1b[2m, \x1b[0m\x1b[38;5;44m/wip\x1b[0m"
             );
         }
         ColorMode::Basic => {
@@ -263,7 +264,7 @@ fn write_hints(mode: &ColorMode) {
             );
             let _ = writeln!(
                 stderr,
-                "  \x1b[2mCommands: \x1b[0m\x1b[36m/compact\x1b[0m\x1b[2m, \x1b[0m\x1b[36m/clear\x1b[0m"
+                "  \x1b[2mCommands: \x1b[0m\x1b[36m/compact\x1b[0m\x1b[2m, \x1b[0m\x1b[36m/clear\x1b[0m\x1b[2m, \x1b[0m\x1b[36m/wip\x1b[0m"
             );
         }
     }
@@ -313,6 +314,100 @@ fn write_version(mode: &ColorMode) {
             let _ = writeln!(stderr, "  \x1b[2m{v}\x1b[0m");
         }
     }
+}
+
+fn fmt_duration_secs(ms: i64) -> String {
+    let s = (ms / 1000).max(0);
+    if s < 60 {
+        format!("{s}s")
+    } else {
+        format!("{}m{}s", s / 60, s % 60)
+    }
+}
+
+async fn print_wip(board: &PlanBoard) {
+    use plan::TaskStatus;
+    let now = chrono::Utc::now().timestamp_millis();
+    let tasks = board.snapshot().await;
+    let (prompt, completion) = board.usage().await;
+    let subagents = subagents::registry().snapshot().await;
+
+    eprintln!();
+    eprintln!("  \x1b[1;36m▸ work in progress\x1b[0m");
+
+    let active: Vec<_> = tasks
+        .iter()
+        .filter(|t| t.status == TaskStatus::InProgress)
+        .collect();
+    let planned: Vec<_> = tasks
+        .iter()
+        .filter(|t| t.status == TaskStatus::Planned)
+        .collect();
+    let done = tasks.iter().filter(|t| t.status == TaskStatus::Done).count();
+
+    eprintln!(
+        "  \x1b[2mmain agent:\x1b[0m {} done · {} planned · {} in-progress",
+        done,
+        planned.len(),
+        active.len()
+    );
+    for t in &active {
+        let elapsed = t
+            .started_at
+            .map(|s| fmt_duration_secs(now - s))
+            .unwrap_or_else(|| "?".into());
+        let act = t.activity.as_deref().unwrap_or("");
+        eprintln!(
+            "    \x1b[34m●\x1b[0m Step {} \x1b[2m({elapsed})\x1b[0m  {}",
+            t.id + 1,
+            t.text
+        );
+        if !act.is_empty() {
+            eprintln!("       \x1b[2m↳ {act}\x1b[0m");
+        }
+    }
+    if prompt + completion > 0 {
+        eprintln!(
+            "  \x1b[2mtokens:\x1b[0m {} in · {} out",
+            prompt, completion
+        );
+    }
+
+    let running: Vec<_> = subagents
+        .iter()
+        .filter(|a| a.status == subagents::SubagentStatus::Running)
+        .collect();
+    let done_subs = subagents
+        .iter()
+        .filter(|a| a.status == subagents::SubagentStatus::Completed)
+        .count();
+    let failed_subs = subagents
+        .iter()
+        .filter(|a| a.status == subagents::SubagentStatus::Failed)
+        .count();
+
+    eprintln!();
+    eprintln!(
+        "  \x1b[2msub-agents:\x1b[0m {} running · {} completed · {} failed",
+        running.len(),
+        done_subs,
+        failed_subs
+    );
+    if running.is_empty() && subagents.is_empty() {
+        eprintln!("    \x1b[2mnone spawned\x1b[0m");
+    }
+    for a in &running {
+        let elapsed = fmt_duration_secs(now - a.started_at);
+        let tokens = a.prompt_tokens + a.completion_tokens;
+        eprintln!(
+            "    \x1b[34m●\x1b[0m {} \x1b[2m({elapsed}, {} tok)\x1b[0m  {}",
+            a.id, tokens, a.task
+        );
+        if let Some(act) = &a.activity {
+            eprintln!("       \x1b[2m↳ {act}\x1b[0m");
+        }
+    }
+    eprintln!();
 }
 
 fn read_config() -> (String, String, String) {
@@ -439,6 +534,10 @@ async fn main() {
                 let client = LlmClient::new(&base_url, &api_key, &model);
                 agent = Agent::new(client, workdir, board.clone());
                 eprintln!("  \x1b[35m⟳\x1b[0m \x1b[2msession cleared\x1b[0m");
+                continue;
+            }
+            "/wip" => {
+                print_wip(&board).await;
                 continue;
             }
             _ => {}

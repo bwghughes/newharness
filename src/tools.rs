@@ -110,6 +110,27 @@ pub fn tool_definitions() -> Vec<ToolDef> {
         ToolDef {
             kind: "function".into(),
             function: FunctionDef {
+                name: "spawn_agent".into(),
+                description: "Spawn a sub-agent to work on a self-contained task in parallel. Pass a complete task brief — the sub-agent has no access to this conversation. Blocks until the sub-agent finishes and returns its final text. Use for isolated research, bulk exploration, or parallelisable work that would otherwise bloat the main context.".into(),
+                parameters: json!({
+                    "type": "object",
+                    "properties": {
+                        "task": {
+                            "type": "string",
+                            "description": "The task for the sub-agent to perform. Must be self-contained: the sub-agent cannot see this conversation."
+                        },
+                        "context": {
+                            "type": "string",
+                            "description": "Optional background context the sub-agent needs (file paths, prior findings, constraints)."
+                        }
+                    },
+                    "required": ["task"]
+                }),
+            },
+        },
+        ToolDef {
+            kind: "function".into(),
+            function: FunctionDef {
                 name: "web_search".into(),
                 description: "Search the web via Tavily. Returns an AI-generated summary plus ranked results (title, URL, snippet). Use for library docs, recent APIs, error messages, or any external/up-to-date info — not codebase search.".into(),
                 parameters: json!({
@@ -177,6 +198,10 @@ pub fn describe_call(call: &ToolCall) -> String {
             let q = args.get("query").and_then(|v| v.as_str()).unwrap_or("");
             format!("\"{q}\"")
         }
+        "spawn_agent" => {
+            let t = args.get("task").and_then(|v| v.as_str()).unwrap_or("");
+            format!("\"{t}\"")
+        }
         _ => String::new(),
     };
 
@@ -209,6 +234,7 @@ pub async fn execute(call: &ToolCall, workdir: &Path) -> String {
         "grep" => exec_grep(&args, workdir).await,
         "bash" => exec_bash(&args, workdir).await,
         "web_search" => exec_web_search(&args).await,
+        "spawn_agent" => exec_spawn_agent(&args, workdir).await,
         other => format!("Unknown tool: {other}"),
     }
 }
@@ -491,6 +517,103 @@ pub(crate) fn resolve_path_pub(raw: &str, workdir: &Path) -> PathBuf {
     resolve_path(raw, workdir)
 }
 
+async fn exec_spawn_agent(args: &serde_json::Value, workdir: &Path) -> String {
+    let task = match args.get("task").and_then(|v| v.as_str()) {
+        Some(t) if !t.trim().is_empty() => t.to_string(),
+        _ => return "Error: missing 'task' parameter".into(),
+    };
+    let context = args
+        .get("context")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+
+    let base_url = std::env::var("STRAPIN_API_URL")
+        .or_else(|_| std::env::var("OPENAI_BASE_URL"))
+        .unwrap_or_else(|_| "https://api.openai.com/v1".into());
+    let api_key = std::env::var("STRAPIN_API_KEY")
+        .or_else(|_| std::env::var("OPENAI_API_KEY"))
+        .unwrap_or_default();
+    let model = std::env::var("STRAPIN_MODEL").unwrap_or_else(|_| "gpt-4o".into());
+
+    let registry = crate::subagents::registry().clone();
+    let id = registry.register(task.clone()).await;
+
+    let board = crate::plan::PlanBoard::new();
+    let mut rx = board.subscribe();
+    let relay_id = id.clone();
+    let relay_reg = registry.clone();
+    let relay = tokio::spawn(async move {
+        loop {
+            match rx.recv().await {
+                Ok(crate::plan::PlanEvent::TaskUpdate {
+                    activity: Some(act),
+                    ..
+                }) => {
+                    relay_reg.update_activity(&relay_id, act).await;
+                }
+                Ok(crate::plan::PlanEvent::UsageUpdate {
+                    prompt_tokens,
+                    completion_tokens,
+                }) => {
+                    relay_reg
+                        .set_usage(&relay_id, prompt_tokens, completion_tokens)
+                        .await;
+                }
+                Ok(_) => {}
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
+            }
+        }
+    });
+
+    let client = crate::client::LlmClient::new(&base_url, &api_key, &model);
+    let mut agent = crate::agent::Agent::new(client, workdir.to_path_buf(), board.clone());
+
+    let prompt = if context.trim().is_empty() {
+        task.clone()
+    } else {
+        format!("{task}\n\n---\nContext:\n{context}")
+    };
+
+    let run_result: Result<(), String> = Box::pin(agent.run_turn(&prompt))
+        .await
+        .map_err(|e| e.to_string());
+    relay.abort();
+    let (prompt_tokens, completion_tokens) = board.usage().await;
+    registry.set_usage(&id, prompt_tokens, completion_tokens).await;
+
+    match run_result {
+        Ok(()) => {
+            let text = agent.last_assistant_text().unwrap_or_default();
+            let mut output = text.clone();
+            if output.len() > 50_000 {
+                output.truncate(50_000);
+                output.push_str("\n... [truncated]");
+            }
+            registry
+                .complete(
+                    &id,
+                    crate::subagents::SubagentStatus::Completed,
+                    Some(output.clone()),
+                )
+                .await;
+            format!("[{id}] {output}")
+        }
+        Err(e) => {
+            let msg = format!("sub-agent error: {e}");
+            registry
+                .complete(
+                    &id,
+                    crate::subagents::SubagentStatus::Failed,
+                    Some(msg.clone()),
+                )
+                .await;
+            format!("[{id}] {msg}")
+        }
+    }
+}
+
 async fn exec_bash(args: &serde_json::Value, workdir: &Path) -> String {
     let command = match args.get("command").and_then(|v| v.as_str()) {
         Some(c) => c,
@@ -554,9 +677,9 @@ mod tests {
     // ── tool_definitions tests ──
 
     #[test]
-    fn tool_definitions_returns_six_tools() {
+    fn tool_definitions_returns_seven_tools() {
         let defs = tool_definitions();
-        assert_eq!(defs.len(), 6);
+        assert_eq!(defs.len(), 7);
     }
 
     #[test]
@@ -571,6 +694,7 @@ mod tests {
                 "edit_file",
                 "grep",
                 "bash",
+                "spawn_agent",
                 "web_search"
             ]
         );
@@ -604,7 +728,7 @@ mod tests {
         let json = serde_json::to_string(&defs).unwrap();
         let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
         assert!(parsed.is_array());
-        assert_eq!(parsed.as_array().unwrap().len(), 6);
+        assert_eq!(parsed.as_array().unwrap().len(), 7);
     }
 
     // ── resolve_path tests ──
