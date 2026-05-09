@@ -66,9 +66,9 @@ All config is via environment variables:
 
 | Variable | Default | Description |
 |---|---|---|
-| `STRAPIN_API_KEY` | -- | API key (falls back to `OPENAI_API_KEY`) |
-| `STRAPIN_API_URL` | `https://api.openai.com/v1` | Base URL (falls back to `OPENAI_BASE_URL`) |
-| `STRAPIN_MODEL` | `gpt-4o` | Model name to use |
+| `STRAPIN_API_KEY` | -- | API key. For ai-stack LiteLLM, `LITELLM_VIRTUAL_KEY` and `LITELLM_MASTER_KEY` are preferred before generic `STRAPIN_API_KEY` / `OPENAI_API_KEY` values; otherwise falls back to `OPENAI_API_KEY`, `LITELLM_VIRTUAL_KEY`, or `LITELLM_MASTER_KEY`. LiteLLM keys can also be read from `/Users/ben/code/ai-stack/.env`. |
+| `STRAPIN_API_URL` | `https://litellm.ai-stack.orb.local/v1` | Base URL (falls back to `OPENAI_BASE_URL`) |
+| `STRAPIN_MODEL` | `qwen3.6-35b-a3b-nvfp4` | Model name to use |
 | `STRAPIN_WORKDIR` | Current directory | Working directory for file operations |
 | `STRAPIN_VERBOSE` | -- | Set to `1` to enable debug logging of API requests and SSE deltas |
 

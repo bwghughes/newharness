@@ -9,8 +9,9 @@ mod web;
 use agent::Agent;
 use client::LlmClient;
 use plan::PlanBoard;
+use std::fs;
 use std::io::{self, BufRead, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 #[derive(Clone, Copy)]
 struct Rgb(u8, u8, u8);
@@ -318,18 +319,115 @@ fn write_version(mode: &ColorMode) {
 fn read_config() -> (String, String, String) {
     let base_url = std::env::var("STRAPIN_API_URL")
         .or_else(|_| std::env::var("OPENAI_BASE_URL"))
-        .unwrap_or_else(|_| "https://api.openai.com/v1".into());
+        .unwrap_or_else(|_| "https://litellm.ai-stack.orb.local/v1".into());
+    let base_url = normalize_base_url(&base_url);
 
-    let api_key = std::env::var("STRAPIN_API_KEY")
-        .or_else(|_| std::env::var("OPENAI_API_KEY"))
-        .unwrap_or_else(|_| {
-            eprintln!("Warning: No API key set. Set STRAPIN_API_KEY or OPENAI_API_KEY.");
+    let api_key = select_api_key(&base_url).unwrap_or_else(|| {
+            eprintln!(
+                "Warning: No API key set. Set STRAPIN_API_KEY, OPENAI_API_KEY, LITELLM_VIRTUAL_KEY, or LITELLM_MASTER_KEY."
+            );
             String::new()
         });
 
-    let model = std::env::var("STRAPIN_MODEL").unwrap_or_else(|_| "gpt-4o".into());
+    let model = std::env::var("STRAPIN_MODEL").unwrap_or_else(|_| "qwen3.6-35b-a3b-nvfp4".into());
 
     (base_url, api_key, model)
+}
+
+fn normalize_base_url(base_url: &str) -> String {
+    let base_url = base_url.trim().trim_end_matches('/');
+    if base_url == "https://litellm.ai-stack.orb.local" {
+        format!("{base_url}/v1")
+    } else {
+        base_url.to_string()
+    }
+}
+
+fn select_api_key(base_url: &str) -> Option<String> {
+    api_key_env_names(base_url).iter().find_map(|name| {
+        config_value(name).inspect(|_value| {
+            if std::env::var("STRAPIN_VERBOSE").is_ok() {
+                eprintln!("\x1b[90m[debug] API key source: {name}\x1b[0m");
+            }
+        })
+    })
+}
+
+fn api_key_env_names(base_url: &str) -> &'static [&'static str] {
+    if is_ai_stack_litellm_url(base_url) {
+        &[
+            "LITELLM_VIRTUAL_KEY",
+            "LITELLM_MASTER_KEY",
+            "STRAPIN_API_KEY",
+            "OPENAI_API_KEY",
+        ]
+    } else {
+        &[
+            "STRAPIN_API_KEY",
+            "OPENAI_API_KEY",
+            "LITELLM_VIRTUAL_KEY",
+            "LITELLM_MASTER_KEY",
+        ]
+    }
+}
+
+fn is_ai_stack_litellm_url(base_url: &str) -> bool {
+    base_url
+        .trim()
+        .starts_with("https://litellm.ai-stack.orb.local")
+}
+
+fn config_value(name: &str) -> Option<String> {
+    env_value(name).or_else(|| ai_stack_env_value(name))
+}
+
+fn env_value(name: &str) -> Option<String> {
+    std::env::var(name)
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| is_usable_api_key(value))
+}
+
+fn ai_stack_env_value(name: &str) -> Option<String> {
+    let path = std::env::var("AI_STACK_ENV_FILE")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| PathBuf::from("/Users/ben/code/ai-stack/.env"));
+    env_file_value(&path, name)
+}
+
+fn env_file_value(path: &Path, name: &str) -> Option<String> {
+    let contents = fs::read_to_string(path).ok()?;
+    for line in contents.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let Some((key, value)) = line.split_once('=') else {
+            continue;
+        };
+        if key.trim() == name {
+            return unquote_env_value(value.trim()).filter(|value| is_usable_api_key(value));
+        }
+    }
+    None
+}
+
+fn is_usable_api_key(value: &str) -> bool {
+    let value = value.trim();
+    !value.is_empty() && !value.eq_ignore_ascii_case("sk-change-me") && !value.contains("<")
+}
+
+fn unquote_env_value(value: &str) -> Option<String> {
+    let value = value.trim();
+    if value.len() >= 2 {
+        let bytes = value.as_bytes();
+        if (bytes[0] == b'"' && bytes[value.len() - 1] == b'"')
+            || (bytes[0] == b'\'' && bytes[value.len() - 1] == b'\'')
+        {
+            return Some(value[1..value.len() - 1].to_string());
+        }
+    }
+    Some(value.to_string())
 }
 
 #[tokio::main]
@@ -351,8 +449,10 @@ async fn main() {
                 println!();
                 println!("Environment:");
                 println!("  STRAPIN_API_URL / OPENAI_BASE_URL  API endpoint");
-                println!("  STRAPIN_API_KEY / OPENAI_API_KEY   API key");
-                println!("  STRAPIN_MODEL                      Model name (default: gpt-4o)");
+                println!(
+                    "  STRAPIN_API_KEY / OPENAI_API_KEY   API key (falls back to LiteLLM keys)"
+                );
+                println!("  STRAPIN_MODEL                      Model name (default: qwen3.6-35b-a3b-nvfp4)");
                 println!("  STRAPIN_WORKDIR                    Working directory");
                 println!("  STRAPIN_SEARCH_API_KEY             Tavily API key for web_search");
                 println!("  STRAPIN_PORT                       Board web UI port (default: 3131)");
@@ -404,7 +504,7 @@ async fn main() {
     let mut stdout = io::stdout();
 
     loop {
-        let _ = write!(stdout, "\n\x1b[1;36m> \x1b[0m");
+        let _ = write!(stdout, "\n\x1b[1;36m🥋 ❯ \x1b[0m");
         let _ = stdout.flush();
 
         let mut input = String::new();
@@ -488,5 +588,72 @@ mod tests {
         let v = version_string();
         let sha = v.rsplit_once('(').unwrap().1.trim_end_matches(')');
         assert!(!sha.is_empty());
+    }
+
+    #[test]
+    fn normalize_base_url_adds_v1_for_ai_stack_root() {
+        assert_eq!(
+            normalize_base_url("https://litellm.ai-stack.orb.local/"),
+            "https://litellm.ai-stack.orb.local/v1"
+        );
+    }
+
+    #[test]
+    fn normalize_base_url_preserves_explicit_paths() {
+        assert_eq!(
+            normalize_base_url("https://litellm.ai-stack.orb.local/v1/"),
+            "https://litellm.ai-stack.orb.local/v1"
+        );
+    }
+
+    #[test]
+    fn ai_stack_url_is_detected() {
+        assert!(is_ai_stack_litellm_url(
+            "https://litellm.ai-stack.orb.local/v1"
+        ));
+        assert!(!is_ai_stack_litellm_url("https://api.openai.com/v1"));
+    }
+
+    #[test]
+    fn ai_stack_prefers_litellm_keys_before_generic_keys() {
+        assert_eq!(
+            api_key_env_names("https://litellm.ai-stack.orb.local/v1"),
+            &[
+                "LITELLM_VIRTUAL_KEY",
+                "LITELLM_MASTER_KEY",
+                "STRAPIN_API_KEY",
+                "OPENAI_API_KEY"
+            ]
+        );
+    }
+
+    #[test]
+    fn env_file_value_reads_unquoted_values() {
+        let path = std::env::temp_dir().join(format!("strap-in-env-test-{}", std::process::id()));
+        fs::write(
+            &path,
+            "# comment\nLITELLM_MASTER_KEY=sk-test\nOTHER=value\n",
+        )
+        .unwrap();
+
+        assert_eq!(
+            env_file_value(&path, "LITELLM_MASTER_KEY").as_deref(),
+            Some("sk-test")
+        );
+
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn env_file_value_reads_quoted_values() {
+        assert_eq!(unquote_env_value("\"sk-test\"").as_deref(), Some("sk-test"));
+        assert_eq!(unquote_env_value("'sk-test'").as_deref(), Some("sk-test"));
+    }
+
+    #[test]
+    fn placeholder_api_keys_are_not_usable() {
+        assert!(!is_usable_api_key("sk-change-me"));
+        assert!(!is_usable_api_key("sk-<redacted>"));
+        assert!(is_usable_api_key("sk-real-key"));
     }
 }

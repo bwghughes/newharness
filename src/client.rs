@@ -1,7 +1,7 @@
 use crate::spinner::{Spinner, Style};
 use crate::types::*;
 use futures_util::StreamExt;
-use reqwest::Client;
+use reqwest::{header::AUTHORIZATION, Client};
 use std::io::{self, Write};
 
 /// Lightweight OpenAI-compatible streaming client.
@@ -12,6 +12,20 @@ pub struct LlmClient {
     base_url: String,
     api_key: String,
     model: String,
+}
+
+fn authorization_header(api_key: &str) -> Option<String> {
+    let api_key = api_key.trim();
+    if api_key.is_empty() {
+        None
+    } else if api_key
+        .get(..7)
+        .is_some_and(|prefix| prefix.eq_ignore_ascii_case("Bearer "))
+    {
+        Some(api_key.to_string())
+    } else {
+        Some(format!("Bearer {api_key}"))
+    }
 }
 
 /// Accumulates streamed SSE deltas into a complete assistant message.
@@ -193,7 +207,7 @@ impl LlmClient {
         Self {
             http,
             base_url: base_url.trim_end_matches('/').to_string(),
-            api_key: api_key.to_string(),
+            api_key: api_key.trim().to_string(),
             model: model.to_string(),
         }
     }
@@ -242,13 +256,12 @@ impl LlmClient {
             );
         }
 
-        let resp = self
-            .http
-            .post(&url)
-            .bearer_auth(&self.api_key)
-            .json(&req)
-            .send()
-            .await?;
+        let mut request = self.http.post(&url).json(&req);
+        if let Some(auth) = authorization_header(&self.api_key) {
+            request = request.header(AUTHORIZATION, auth);
+        }
+
+        let resp = request.send().await?;
 
         if !resp.status().is_success() {
             let status = resp.status();
@@ -606,6 +619,27 @@ mod tests {
         let c = LlmClient::new("http://localhost:11434/v1", "test-key", "llama3");
         assert_eq!(c.api_key, "test-key");
         assert_eq!(c.model, "llama3");
+    }
+
+    #[test]
+    fn authorization_header_adds_bearer_to_raw_key() {
+        assert_eq!(
+            authorization_header("test-key").as_deref(),
+            Some("Bearer test-key")
+        );
+    }
+
+    #[test]
+    fn authorization_header_preserves_existing_bearer_prefix() {
+        assert_eq!(
+            authorization_header("Bearer test-key").as_deref(),
+            Some("Bearer test-key")
+        );
+    }
+
+    #[test]
+    fn authorization_header_omits_empty_keys() {
+        assert_eq!(authorization_header("   "), None);
     }
 
     // ── finish() filtering and fallback ID tests ──
