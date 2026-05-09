@@ -1,0 +1,941 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>STRAP IN Codebase Tour</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #101114;
+      --panel: #181b20;
+      --panel-2: #20242b;
+      --ink: #f1f4f8;
+      --muted: #aab3c0;
+      --line: #303743;
+      --cyan: #40d6d0;
+      --blue: #7aa7ff;
+      --green: #8ee08f;
+      --gold: #f0c15f;
+      --coral: #ff8b73;
+      --pink: #d991ff;
+      --shadow: 0 22px 70px rgba(0, 0, 0, .34);
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+
+    * { box-sizing: border-box; }
+
+    html { scroll-behavior: smooth; }
+
+    body {
+      margin: 0;
+      min-height: 100vh;
+      background:
+        linear-gradient(125deg, rgba(64, 214, 208, .12), transparent 32%),
+        linear-gradient(45deg, rgba(255, 139, 115, .10), transparent 35%),
+        var(--bg);
+      color: var(--ink);
+    }
+
+    button, input { font: inherit; }
+
+    .shell {
+      display: grid;
+      grid-template-columns: 280px minmax(0, 1fr);
+      min-height: 100vh;
+    }
+
+    aside {
+      position: sticky;
+      top: 0;
+      height: 100vh;
+      padding: 22px 18px;
+      border-right: 1px solid var(--line);
+      background: rgba(16, 17, 20, .84);
+      backdrop-filter: blur(14px);
+      overflow: auto;
+    }
+
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      margin-bottom: 24px;
+    }
+
+    .mark {
+      display: grid;
+      place-items: center;
+      width: 42px;
+      height: 42px;
+      border: 1px solid rgba(64, 214, 208, .48);
+      border-radius: 8px;
+      background: #0d1416;
+      box-shadow: inset 0 0 30px rgba(64, 214, 208, .16);
+      font-size: 24px;
+    }
+
+    .brand h1 {
+      margin: 0;
+      font-size: 18px;
+      letter-spacing: 0;
+    }
+
+    .brand p {
+      margin: 3px 0 0;
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    nav {
+      display: grid;
+      gap: 6px;
+      margin-bottom: 24px;
+    }
+
+    nav a {
+      color: var(--muted);
+      text-decoration: none;
+      padding: 10px 12px;
+      border-radius: 8px;
+      border: 1px solid transparent;
+    }
+
+    nav a:hover,
+    nav a.active {
+      color: var(--ink);
+      background: rgba(255, 255, 255, .05);
+      border-color: var(--line);
+    }
+
+    .facts {
+      display: grid;
+      gap: 10px;
+      padding-top: 18px;
+      border-top: 1px solid var(--line);
+    }
+
+    .fact {
+      display: grid;
+      gap: 3px;
+      padding: 12px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: rgba(255, 255, 255, .03);
+    }
+
+    .fact strong {
+      font-size: 12px;
+      color: var(--muted);
+      text-transform: uppercase;
+      letter-spacing: .08em;
+    }
+
+    .fact span {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: 13px;
+      color: var(--ink);
+      overflow-wrap: anywhere;
+    }
+
+    main {
+      min-width: 0;
+      padding: 34px min(6vw, 72px) 72px;
+    }
+
+    section {
+      max-width: 1180px;
+      margin: 0 auto 54px;
+      scroll-margin-top: 24px;
+    }
+
+    .intro {
+      display: grid;
+      grid-template-columns: minmax(0, 1.05fr) minmax(300px, .95fr);
+      gap: 28px;
+      align-items: stretch;
+    }
+
+    .intro-copy {
+      padding: 8px 0 0;
+    }
+
+    .eyebrow {
+      margin: 0 0 13px;
+      color: var(--cyan);
+      font-size: 13px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: .12em;
+    }
+
+    h2 {
+      margin: 0 0 14px;
+      font-size: clamp(32px, 5vw, 62px);
+      line-height: 1;
+      letter-spacing: 0;
+    }
+
+    .lead {
+      margin: 0;
+      max-width: 760px;
+      color: var(--muted);
+      font-size: 18px;
+      line-height: 1.65;
+    }
+
+    .terminal {
+      align-self: stretch;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #080a0d;
+      box-shadow: var(--shadow);
+      overflow: hidden;
+    }
+
+    .terminal-top {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 12px 14px;
+      border-bottom: 1px solid var(--line);
+      background: #12151a;
+    }
+
+    .dot {
+      width: 11px;
+      height: 11px;
+      border-radius: 50%;
+      background: var(--coral);
+    }
+
+    .dot:nth-child(2) { background: var(--gold); }
+    .dot:nth-child(3) { background: var(--green); }
+
+    .terminal-body {
+      padding: 18px;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: 14px;
+      line-height: 1.7;
+      color: #d9f0f0;
+    }
+
+    .prompt { color: var(--cyan); }
+    .comment { color: #768493; }
+    .ok { color: var(--green); }
+    .warn { color: var(--gold); }
+
+    .toolbar {
+      display: flex;
+      gap: 12px;
+      flex-wrap: wrap;
+      margin-top: 28px;
+    }
+
+    .pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      min-height: 38px;
+      padding: 0 13px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: rgba(255, 255, 255, .04);
+      color: var(--ink);
+      font-size: 14px;
+      text-decoration: none;
+    }
+
+    .section-head {
+      display: flex;
+      align-items: end;
+      justify-content: space-between;
+      gap: 18px;
+      margin-bottom: 20px;
+    }
+
+    .section-head h3 {
+      margin: 0;
+      font-size: 28px;
+      letter-spacing: 0;
+    }
+
+    .section-head p {
+      margin: 8px 0 0;
+      color: var(--muted);
+      max-width: 700px;
+      line-height: 1.55;
+    }
+
+    .flow {
+      display: grid;
+      grid-template-columns: repeat(5, minmax(120px, 1fr));
+      gap: 12px;
+      align-items: stretch;
+    }
+
+    .node {
+      position: relative;
+      min-height: 120px;
+      padding: 16px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--panel);
+    }
+
+    .node::after {
+      content: "";
+      position: absolute;
+      top: 50%;
+      right: -13px;
+      width: 13px;
+      height: 1px;
+      background: var(--line);
+    }
+
+    .node:last-child::after { display: none; }
+
+    .node strong {
+      display: block;
+      margin-bottom: 8px;
+      color: var(--ink);
+      font-size: 16px;
+    }
+
+    .node span {
+      color: var(--muted);
+      font-size: 14px;
+      line-height: 1.5;
+    }
+
+    .node[data-accent="cyan"] { border-top: 3px solid var(--cyan); }
+    .node[data-accent="blue"] { border-top: 3px solid var(--blue); }
+    .node[data-accent="green"] { border-top: 3px solid var(--green); }
+    .node[data-accent="gold"] { border-top: 3px solid var(--gold); }
+    .node[data-accent="coral"] { border-top: 3px solid var(--coral); }
+
+    .module-grid {
+      display: grid;
+      grid-template-columns: 330px minmax(0, 1fr);
+      gap: 18px;
+      align-items: start;
+    }
+
+    .module-list {
+      display: grid;
+      gap: 8px;
+    }
+
+    .module-button {
+      width: 100%;
+      text-align: left;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: rgba(255, 255, 255, .035);
+      color: var(--ink);
+      padding: 13px 14px;
+      cursor: pointer;
+    }
+
+    .module-button.active {
+      border-color: rgba(64, 214, 208, .8);
+      background: rgba(64, 214, 208, .08);
+    }
+
+    .module-button code {
+      display: block;
+      color: var(--cyan);
+      font-size: 13px;
+      margin-bottom: 5px;
+    }
+
+    .module-button span {
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    .detail-panel {
+      min-height: 528px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--panel);
+      box-shadow: var(--shadow);
+      overflow: hidden;
+    }
+
+    .detail-title {
+      padding: 20px;
+      border-bottom: 1px solid var(--line);
+      background: var(--panel-2);
+    }
+
+    .detail-title code {
+      color: var(--cyan);
+      font-size: 14px;
+    }
+
+    .detail-title h4 {
+      margin: 7px 0 0;
+      font-size: 24px;
+      letter-spacing: 0;
+    }
+
+    .detail-body {
+      display: grid;
+      gap: 18px;
+      padding: 20px;
+    }
+
+    .detail-body p {
+      margin: 0;
+      color: var(--muted);
+      line-height: 1.65;
+    }
+
+    .chips {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+    }
+
+    .chip {
+      padding: 7px 10px;
+      border-radius: 8px;
+      background: rgba(122, 167, 255, .11);
+      border: 1px solid rgba(122, 167, 255, .28);
+      color: #d8e4ff;
+      font-size: 13px;
+    }
+
+    .codebox {
+      margin: 0;
+      padding: 15px;
+      overflow: auto;
+      border-radius: 8px;
+      border: 1px solid var(--line);
+      background: #0a0d10;
+      color: #d5dae2;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: 13px;
+      line-height: 1.55;
+      white-space: pre-wrap;
+    }
+
+    .cards {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 14px;
+    }
+
+    .card {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: rgba(255, 255, 255, .035);
+      padding: 17px;
+    }
+
+    .card strong {
+      display: block;
+      margin-bottom: 8px;
+      color: var(--ink);
+    }
+
+    .card p {
+      margin: 0;
+      color: var(--muted);
+      line-height: 1.55;
+      font-size: 14px;
+    }
+
+    .card .stripe {
+      width: 42px;
+      height: 3px;
+      border-radius: 999px;
+      margin-bottom: 14px;
+      background: var(--cyan);
+    }
+
+    .card:nth-child(4n + 2) .stripe { background: var(--gold); }
+    .card:nth-child(4n + 3) .stripe { background: var(--coral); }
+    .card:nth-child(4n + 4) .stripe { background: var(--pink); }
+
+    .timeline {
+      display: grid;
+      gap: 12px;
+      counter-reset: step;
+    }
+
+    .step {
+      display: grid;
+      grid-template-columns: 54px minmax(0, 1fr);
+      gap: 14px;
+      align-items: start;
+    }
+
+    .step::before {
+      counter-increment: step;
+      content: counter(step);
+      display: grid;
+      place-items: center;
+      width: 42px;
+      height: 42px;
+      border-radius: 8px;
+      background: rgba(64, 214, 208, .11);
+      border: 1px solid rgba(64, 214, 208, .35);
+      color: var(--cyan);
+      font-weight: 800;
+    }
+
+    .step-body {
+      padding: 13px 15px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--panel);
+    }
+
+    .step-body strong {
+      display: block;
+      margin-bottom: 5px;
+    }
+
+    .step-body p {
+      margin: 0;
+      color: var(--muted);
+      line-height: 1.55;
+    }
+
+    .callout {
+      border: 1px solid rgba(240, 193, 95, .42);
+      border-radius: 8px;
+      background: rgba(240, 193, 95, .08);
+      padding: 18px;
+      color: #f7e4b8;
+      line-height: 1.6;
+    }
+
+    .matrix {
+      width: 100%;
+      border-collapse: collapse;
+      overflow: hidden;
+      border-radius: 8px;
+      border: 1px solid var(--line);
+      background: var(--panel);
+    }
+
+    .matrix th,
+    .matrix td {
+      padding: 13px 14px;
+      border-bottom: 1px solid var(--line);
+      text-align: left;
+      vertical-align: top;
+    }
+
+    .matrix th {
+      background: var(--panel-2);
+      color: var(--muted);
+      font-size: 12px;
+      text-transform: uppercase;
+      letter-spacing: .08em;
+    }
+
+    .matrix td {
+      color: var(--muted);
+      line-height: 1.5;
+    }
+
+    .matrix tr:last-child td { border-bottom: 0; }
+    .matrix code { color: var(--cyan); }
+
+    @media (max-width: 980px) {
+      .shell { grid-template-columns: 1fr; }
+      aside {
+        position: relative;
+        height: auto;
+        border-right: 0;
+        border-bottom: 1px solid var(--line);
+      }
+      nav {
+        display: flex;
+        overflow: auto;
+        padding-bottom: 4px;
+      }
+      nav a { white-space: nowrap; }
+      .intro,
+      .module-grid { grid-template-columns: 1fr; }
+      .flow,
+      .cards { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .node::after { display: none; }
+    }
+
+    @media (max-width: 640px) {
+      main { padding: 24px 16px 44px; }
+      .flow,
+      .cards { grid-template-columns: 1fr; }
+      .section-head { display: block; }
+      .module-list { grid-template-columns: 1fr; }
+      .step { grid-template-columns: 1fr; }
+      .matrix { display: block; overflow-x: auto; }
+    }
+  </style>
+</head>
+<body>
+  <div class="shell">
+    <aside>
+      <div class="brand">
+        <div class="mark">🥋</div>
+        <div>
+          <h1>STRAP IN</h1>
+          <p>codebase tour</p>
+        </div>
+      </div>
+
+      <nav aria-label="Page sections">
+        <a href="#overview" class="active">Overview</a>
+        <a href="#runtime">Runtime Flow</a>
+        <a href="#modules">Modules</a>
+        <a href="#decisions">Design Decisions</a>
+        <a href="#implementation">Implementation</a>
+        <a href="#testing">Testing Notes</a>
+      </nav>
+
+      <div class="facts">
+        <div class="fact">
+          <strong>Default endpoint</strong>
+          <span>https://litellm.ai-stack.orb.local/v1</span>
+        </div>
+        <div class="fact">
+          <strong>Default model</strong>
+          <span>qwen3.6-35b-a3b-nvfp4</span>
+        </div>
+        <div class="fact">
+          <strong>Prompt</strong>
+          <span>🥋 ❯</span>
+        </div>
+      </div>
+    </aside>
+
+    <main>
+      <section id="overview" class="intro">
+        <div class="intro-copy">
+          <p class="eyebrow">A compact Rust agent harness</p>
+          <h2>A guided walk through the harness.</h2>
+          <p class="lead">
+            This repository is a small terminal coding agent. It speaks the OpenAI-compatible chat
+            API, streams model output as it arrives, gives the model a narrow set of filesystem and
+            shell tools, and records the plan in both a terminal/web board and <code>TASKS.md</code>.
+          </p>
+          <div class="toolbar" aria-label="Codebase quick facts">
+            <span class="pill">Rust + Tokio</span>
+            <span class="pill">Streaming SSE</span>
+            <span class="pill">OpenAI-compatible</span>
+            <span class="pill">Exact-match edits</span>
+          </div>
+        </div>
+
+        <div class="terminal" aria-label="Harness terminal sketch">
+          <div class="terminal-top">
+            <span class="dot"></span>
+            <span class="dot"></span>
+            <span class="dot"></span>
+          </div>
+          <div class="terminal-body">
+            <div><span class="prompt">🥋 ❯</span> fix the failing tests</div>
+            <div class="comment">1. Inspect the failure</div>
+            <div class="comment">2. Patch the grep fallback</div>
+            <div class="comment">3. Run the full suite</div>
+            <br>
+            <div><span class="ok">✓</span> read_file src/tools.rs</div>
+            <div><span class="ok">✓</span> edit_file src/tools.rs</div>
+            <div><span class="ok">✓</span> bash cargo test</div>
+            <br>
+            <div><span class="warn">Usage</span> prompt 23k, completion 4k</div>
+          </div>
+        </div>
+      </section>
+
+      <section id="runtime">
+        <div class="section-head">
+          <div>
+            <h3>Runtime Flow</h3>
+            <p>The program keeps the loop deliberately short: read a request, stream a model turn, run any requested tools, append tool results, and continue until the assistant stops asking for tools.</p>
+          </div>
+        </div>
+
+        <div class="flow" aria-label="Execution pipeline">
+          <div class="node" data-accent="cyan">
+            <strong>CLI</strong>
+            <span><code>main.rs</code> reads env config, prints the prompt, and accepts slash commands.</span>
+          </div>
+          <div class="node" data-accent="blue">
+            <strong>Agent</strong>
+            <span><code>agent.rs</code> owns message history, plan parsing, turn limits, and tool dispatch.</span>
+          </div>
+          <div class="node" data-accent="green">
+            <strong>Client</strong>
+            <span><code>client.rs</code> posts chat completions, streams SSE, and assembles tool-call deltas.</span>
+          </div>
+          <div class="node" data-accent="gold">
+            <strong>Tools</strong>
+            <span><code>tools.rs</code> exposes read, list, edit, grep, bash, and Tavily web search.</span>
+          </div>
+          <div class="node" data-accent="coral">
+            <strong>Board</strong>
+            <span><code>plan.rs</code> and <code>web.rs</code> broadcast progress and append history.</span>
+          </div>
+        </div>
+      </section>
+
+      <section id="modules">
+        <div class="section-head">
+          <div>
+            <h3>Module Map</h3>
+            <p>Select a file to see the role it plays, the local design choice it embodies, and the most important behavior to know before changing it.</p>
+          </div>
+        </div>
+
+        <div class="module-grid">
+          <div class="module-list" id="moduleList"></div>
+          <article class="detail-panel" id="moduleDetail" aria-live="polite"></article>
+        </div>
+      </section>
+
+      <section id="decisions">
+        <div class="section-head">
+          <div>
+            <h3>Design Decisions</h3>
+            <p>The harness favors small, explicit pieces over a framework-heavy architecture. Most choices are there to keep agent behavior observable and provider integration predictable.</p>
+          </div>
+        </div>
+
+        <div class="cards" id="decisionCards"></div>
+      </section>
+
+      <section id="implementation">
+        <div class="section-head">
+          <div>
+            <h3>Implementation Walkthrough</h3>
+            <p>This is the path a normal prompt takes through the system, from terminal input to model stream to filesystem changes.</p>
+          </div>
+        </div>
+
+        <div class="timeline">
+          <div class="step">
+            <div class="step-body">
+              <strong>Configuration is selected up front.</strong>
+              <p><code>read_config</code> chooses the base URL, model, workdir, verbosity, and API key. For the ai-stack LiteLLM endpoint it prefers <code>LITELLM_VIRTUAL_KEY</code>, then <code>LITELLM_MASTER_KEY</code>, then generic keys, and rejects placeholder values like <code>sk-change-me</code>.</p>
+            </div>
+          </div>
+          <div class="step">
+            <div class="step-body">
+              <strong>The system prompt is built from code plus local policy.</strong>
+              <p><code>Agent::new</code> loads tool schemas, installs the built-in coding-agent instructions, and appends the nearest parent <code>STRAP.md</code> when one exists.</p>
+            </div>
+          </div>
+          <div class="step">
+            <div class="step-body">
+              <strong>The client streams and assembles partial responses.</strong>
+              <p><code>StreamAssembler</code> accumulates text, sparse tool-call indexes, function names, and argument fragments until <code>[DONE]</code> arrives.</p>
+            </div>
+          </div>
+          <div class="step">
+            <div class="step-body">
+              <strong>Tool calls run through a narrow executor.</strong>
+              <p>Single calls get a spinner; multiple calls are spawned concurrently with Tokio and returned to the model as <code>tool</code> messages.</p>
+            </div>
+          </div>
+          <div class="step">
+            <div class="step-body">
+              <strong>Plan state is broadcast and archived.</strong>
+              <p>Numbered assistant plans become board tasks. The web UI receives SSE updates, and <code>TASKS.md</code> gets a timestamped completion record at the end of the turn.</p>
+            </div>
+          </div>
+        </div>
+
+        <p class="callout">
+          The agent loop has a hard cap of 50 model/tool turns. That is a practical guardrail: enough room for real work, but finite when a model keeps asking for tools.
+        </p>
+      </section>
+
+      <section id="testing">
+        <div class="section-head">
+          <div>
+            <h3>Testing Notes</h3>
+            <p>The tests are mostly unit tests around the contract edges: serialization, streaming assembly, tool behavior, config normalization, and web board event shape.</p>
+          </div>
+        </div>
+
+        <table class="matrix">
+          <thead>
+            <tr>
+              <th>Area</th>
+              <th>What the tests protect</th>
+              <th>Why it matters</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><code>client.rs</code></td>
+              <td>SSE parsing, token usage, tool-call deltas, and auth header formatting.</td>
+              <td>Provider quirks show up here first, especially with LiteLLM and streamed tool calls.</td>
+            </tr>
+            <tr>
+              <td><code>tools.rs</code></td>
+              <td>Exact file edits, path handling, grep behavior, fallback search, and command execution output.</td>
+              <td>The model only changes the world through these tools, so small edge cases can become big agent failures.</td>
+            </tr>
+            <tr>
+              <td><code>plan.rs</code></td>
+              <td>Numbered-plan parsing, task progression, usage accounting, and <code>TASKS.md</code> output.</td>
+              <td>The board is the user's window into what the agent thinks it is doing.</td>
+            </tr>
+            <tr>
+              <td><code>web.rs</code></td>
+              <td>Embedded board HTML, SSE event construction, initial snapshots, and lag recovery.</td>
+              <td>The browser view should stay useful even when subscribers connect late or miss events.</td>
+            </tr>
+          </tbody>
+        </table>
+      </section>
+    </main>
+  </div>
+
+  <script>
+    const modules = [
+      {
+        file: "src/main.rs",
+        title: "CLI entry point and configuration",
+        summary: "Owns the user-facing terminal experience: banner, prompt, slash commands, environment config, board server startup, and REPL loop.",
+        choices: ["Env-first configuration", "ai-stack URL normalization", "placeholder key rejection", "🥋 ❯ prompt"],
+        snippet: `STRAPIN_API_URL defaults to the ai-stack LiteLLM /v1 endpoint.\nSTRAPIN_MODEL defaults to qwen3.6-35b-a3b-nvfp4.\nAPI key lookup prefers LiteLLM-specific keys for ai-stack.`
+      },
+      {
+        file: "src/agent.rs",
+        title: "Agent loop and orchestration",
+        summary: "Keeps the message history, attaches the system prompt, parses assistant plans, dispatches tools, records usage, and writes the final task history.",
+        choices: ["50 turn cap", "STRAP.md discovery", "plan-first behavior", "parallel tool spawning"],
+        snippet: `for turn in 0..max_turns:\n  stream assistant response\n  parse numbered plan once\n  execute requested tools\n  append tool results\n  stop when no tools are requested`
+      },
+      {
+        file: "src/client.rs",
+        title: "Streaming OpenAI-compatible client",
+        summary: "Builds chat completion requests with tools, streams SSE response lines, handles usage chunks, normalizes Authorization headers, and assembles fragmented tool calls.",
+        choices: ["reqwest client pool", "TCP_NODELAY", "Bearer prefix normalization", "sparse tool-call delta support"],
+        snippet: `Authorization is omitted for an empty key.\nRaw keys are sent as "Bearer <key>".\nExisting "Bearer ..." values are preserved.`
+      },
+      {
+        file: "src/tools.rs",
+        title: "Tool schemas and executors",
+        summary: "Defines the model-callable functions and implements their behavior against the local workspace or external search service.",
+        choices: ["Exact-match edit_file", "hidden files skipped in list_dir", "ripgrep first", "fallback grep when rg is missing"],
+        snippet: `Tools: read_file, list_dir, edit_file, grep, bash, web_search.\nedit_file rejects zero matches and multi-match replacements.\ngrep truncates very large output at 50 KB.`
+      },
+      {
+        file: "src/types.rs",
+        title: "API data contracts",
+        summary: "Contains the serde shapes for chat requests, messages, tool definitions, tool calls, streaming chunks, and usage accounting.",
+        choices: ["skip None fields", "shared request/response types", "delta structs match SSE chunks"],
+        snippet: `Message::system(...)\nMessage::user(...)\nMessage::assistant(content, tool_calls)\nMessage::tool_result(tool_call_id, content)`
+      },
+      {
+        file: "src/plan.rs",
+        title: "Plan board state and history",
+        summary: "Turns numbered assistant text into tasks, tracks progress and token usage, broadcasts board events, and appends turn summaries to TASKS.md.",
+        choices: ["broadcast channel", "UTC timestamps", "numbered-plan parser", "TASKS.md append-only history"],
+        snippet: `Plan states: planned, in_progress, done.\nEvents: plan_created, task_update, board_reset, usage_update.`
+      },
+      {
+        file: "src/web.rs + src/board.html",
+        title: "Browser board",
+        summary: "Serves the embedded HTML board and exposes an SSE endpoint for live plan, activity, and usage updates.",
+        choices: ["Axum router", "EventSource client", "snapshot on connect", "keep-alive every 15 seconds"],
+        snippet: `GET /        -> embedded board HTML\nGET /events  -> server-sent events stream`
+      },
+      {
+        file: "src/spinner.rs",
+        title: "Terminal progress feedback",
+        summary: "Provides animated spinners, progress bars for multi-tool work, and colored completion messages so streaming and tool execution feel alive.",
+        choices: ["stderr rendering", "async stop handle", "tool commentary", "multi-tool progress bar"],
+        snippet: `Spinner::start_tool(name, commentary, Style::Braille)\nToolProgress::tick(tool_name, commentary)\nprint_tool_done(name, commentary, detail)`
+      }
+    ];
+
+    const decisions = [
+      ["OpenAI-compatible boundary", "The harness avoids a provider SDK and talks directly to /chat/completions. That keeps LiteLLM, ai-stack, local models, and hosted providers behind one interface."],
+      ["Streaming first", "SSE streaming is not an afterthought. The client prints tokens as they arrive and has a dedicated assembler for fragmented text, usage, and tool calls."],
+      ["Small tool surface", "The model can read, list, edit, grep, run shell commands, and search the web. The small set is easier to reason about and test."],
+      ["Exact string edits", "File mutation goes through exact replacement, with explicit failures for zero or multiple matches. That favors precise, reviewable changes over fuzzy rewriting."],
+      ["Plan visibility", "Numbered plans are parsed into live board tasks, then written into TASKS.md. The agent's intent is visible during and after a run."],
+      ["Concurrent tool execution", "When a model asks for several independent tools, the harness starts them together with Tokio and then feeds the collected results back to the model."],
+      ["Config through env", "The binary stays portable. Runtime details live in STRAPIN_* variables and ai-stack .env discovery rather than project-specific config files."],
+      ["Graceful grep fallback", "ripgrep is preferred for speed and .gitignore behavior, but the fallback keeps search tests and basic usage working when rg is unavailable."]
+    ];
+
+    const moduleList = document.querySelector("#moduleList");
+    const moduleDetail = document.querySelector("#moduleDetail");
+    const decisionCards = document.querySelector("#decisionCards");
+
+    function escapeHtml(value) {
+      return value
+        .replaceAll("&", "&amp;")
+        .replaceAll("<", "&lt;")
+        .replaceAll(">", "&gt;")
+        .replaceAll('"', "&quot;");
+    }
+
+    function renderModule(index) {
+      const mod = modules[index];
+      document.querySelectorAll(".module-button").forEach((button, i) => {
+        button.classList.toggle("active", i === index);
+      });
+
+      moduleDetail.innerHTML = `
+        <div class="detail-title">
+          <code>${escapeHtml(mod.file)}</code>
+          <h4>${escapeHtml(mod.title)}</h4>
+        </div>
+        <div class="detail-body">
+          <p>${escapeHtml(mod.summary)}</p>
+          <div class="chips">
+            ${mod.choices.map(choice => `<span class="chip">${escapeHtml(choice)}</span>`).join("")}
+          </div>
+          <pre class="codebox">${escapeHtml(mod.snippet)}</pre>
+        </div>
+      `;
+    }
+
+    modules.forEach((mod, index) => {
+      const button = document.createElement("button");
+      button.className = "module-button";
+      button.type = "button";
+      button.innerHTML = `<code>${escapeHtml(mod.file)}</code><span>${escapeHtml(mod.title)}</span>`;
+      button.addEventListener("click", () => renderModule(index));
+      moduleList.appendChild(button);
+    });
+
+    decisions.forEach(([title, body]) => {
+      const card = document.createElement("article");
+      card.className = "card";
+      card.innerHTML = `<div class="stripe"></div><strong>${escapeHtml(title)}</strong><p>${escapeHtml(body)}</p>`;
+      decisionCards.appendChild(card);
+    });
+
+    renderModule(0);
+
+    const navLinks = Array.from(document.querySelectorAll("nav a"));
+    const sections = navLinks
+      .map(link => document.querySelector(link.getAttribute("href")))
+      .filter(Boolean);
+
+    const observer = new IntersectionObserver(entries => {
+      entries.forEach(entry => {
+        if (!entry.isIntersecting) return;
+        navLinks.forEach(link => {
+          link.classList.toggle("active", link.getAttribute("href") === `#${entry.target.id}`);
+        });
+      });
+    }, { rootMargin: "-35% 0px -55% 0px", threshold: 0 });
+
+    sections.forEach(section => observer.observe(section));
+  </script>
+</body>
+</html>
