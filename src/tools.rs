@@ -1,5 +1,7 @@
 use crate::types::*;
 use serde_json::json;
+use std::fs;
+use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
@@ -480,8 +482,85 @@ async fn exec_grep(args: &serde_json::Value, workdir: &Path) -> String {
                 result
             }
         }
+        Err(e) if e.kind() == io::ErrorKind::NotFound => fallback_grep(pattern, &search_path, args),
         Err(e) => format!("Error running rg: {e}"),
     }
+}
+
+fn fallback_grep(pattern: &str, search_path: &Path, args: &serde_json::Value) -> String {
+    let glob = args.get("glob").and_then(|v| v.as_str());
+    let pattern = pattern.to_lowercase();
+    let mut matches = Vec::new();
+
+    collect_grep_matches(search_path, search_path, &pattern, glob, &mut matches);
+
+    if matches.is_empty() {
+        "No matches found.".into()
+    } else {
+        let mut result = matches.join("\n");
+        if result.len() > 50_000 {
+            result.truncate(50_000);
+            result.push_str("\n... [truncated]");
+        }
+        result
+    }
+}
+
+fn collect_grep_matches(
+    path: &Path,
+    root: &Path,
+    pattern: &str,
+    glob: Option<&str>,
+    matches: &mut Vec<String>,
+) {
+    let Ok(metadata) = fs::metadata(path) else {
+        return;
+    };
+
+    if metadata.is_dir() {
+        let Ok(entries) = fs::read_dir(path) else {
+            return;
+        };
+        for entry in entries.filter_map(Result::ok) {
+            collect_grep_matches(&entry.path(), root, pattern, glob, matches);
+        }
+        return;
+    }
+
+    if !metadata.is_file() || !glob_matches(path, glob) {
+        return;
+    }
+
+    let Ok(content) = fs::read_to_string(path) else {
+        return;
+    };
+    let display_path = path.strip_prefix(root).unwrap_or(path);
+
+    for (idx, line) in content.lines().enumerate() {
+        if line.to_lowercase().contains(pattern) {
+            matches.push(format!("{}:{}:{}", display_path.display(), idx + 1, line));
+        }
+    }
+}
+
+fn glob_matches(path: &Path, glob: Option<&str>) -> bool {
+    let Some(glob) = glob else {
+        return true;
+    };
+    let Some(file_name) = path.file_name().and_then(|name| name.to_str()) else {
+        return false;
+    };
+
+    if glob == "*" {
+        return true;
+    }
+    if let Some(suffix) = glob.strip_prefix('*') {
+        return file_name.ends_with(suffix);
+    }
+    if let Some(prefix) = glob.strip_suffix('*') {
+        return file_name.starts_with(prefix);
+    }
+    file_name == glob
 }
 
 /// Resolve a user-supplied path relative to the working directory.
@@ -949,6 +1028,16 @@ mod tests {
         let args = json!({"pattern": "search_target", "path": "src"});
         let result = exec_grep(&args, dir.path()).await;
         assert!(result.contains("search_target"));
+    }
+
+    #[test]
+    fn grep_fallback_finds_matching_lines() {
+        let dir = tmp();
+        fs::write(dir.path().join("test.rs"), "fn main() {}\nfn helper() {}").unwrap();
+
+        let args = json!({"pattern": "FN MAIN"});
+        let result = fallback_grep("FN MAIN", dir.path(), &args);
+        assert!(result.contains("fn main"));
     }
 
     // ── bash tests ──
